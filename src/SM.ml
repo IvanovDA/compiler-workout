@@ -22,8 +22,37 @@ type config = int list * Syntax.Stmt.config
      val eval : config -> prg -> config
 
    Takes a configuration and a program, and returns a configuration as a result
- *)                         
-let eval _ = failwith "Not yet implemented"
+ *)               
+
+let evalInstruction conf instr =
+	let (stack, (s, i, o)) = conf in
+	match instr with
+		| BINOP op -> (
+			match stack with
+				| b :: a :: stack -> [Syntax.Expr.evalBinop op a b] @ stack, (s, i, o)
+				| a -> failwith (Printf.sprintf "[SM] Only one value on stack for binop %s" op)
+				| [] -> failwith (Printf.sprintf "[SM] No values on stack for binop %s" op)
+		)
+		| CONST n -> [n] @ stack, (s, i, o)
+		| READ -> (
+			match i with
+				| n :: i -> [n] @ stack, (s, i, o)
+				| _ -> failwith "[SM] No input data for READ instruction"
+		)
+		| WRITE -> (
+			match stack with
+				| n :: stack -> stack, (s, i, o @ [n])
+				| _ -> failwith "[SM] Empty stack on WRITE instruction"
+		)
+		| LD v -> [s v] @ stack, (s, i, o)
+		| ST v -> (
+			match stack with
+				| n :: stack -> stack, ((Syntax.Expr.update v n s), i, o)
+				| _ -> failwith "[SM] Empty stack on ST instruction"
+		)
+		| _ -> failwith "[SM] Unsupported instruction"
+
+let eval conf p = List.fold_left evalInstruction conf p
 
 (* Top-level evaluation
 
@@ -41,4 +70,13 @@ let run i p = let (_, (_, _, o)) = eval ([], (Syntax.Expr.empty, i, [])) p in o
    stack machine
  *)
 
-let compile _ = failwith "Not yet implemented"
+let rec compileExpr t = match t with
+  | Syntax.Expr.Const n				-> [CONST n]
+  | Syntax.Expr.Var v				-> [LD v]
+  | Syntax.Expr.Binop (op, a, b)	-> (compileExpr a) @ (compileExpr b) @ [BINOP op]
+
+let rec compile p = match p with
+  | Syntax.Stmt.Read v			-> [READ; ST v]
+  | Syntax.Stmt.Write x			-> (compileExpr x) @ [WRITE]
+  | Syntax.Stmt.Assign (v, x)	-> (compileExpr x) @ [ST v]
+  | Syntax.Stmt.Seq (p1, p2)	-> (compile p1) @ (compile p2)

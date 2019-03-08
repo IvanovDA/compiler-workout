@@ -34,14 +34,34 @@ module Expr =
     *)
     let update x v s = fun y -> if x = y then v else s y
 
-    (* Expression evaluator
+	let boolToInt n = if n then 1 else 0
 
-          val eval : state -> t -> int
- 
-       Takes a state and an expression, and returns the value of the expression in 
-       the given state.
-    *)
-    let eval _ = failwith "Not implemented yet"
+	let evalBinop op a b = match op with
+		| "+" -> a + b
+		| "-" -> a - b
+		| "*" -> a * b
+		| "/" -> a / b
+		| "%" -> a mod b
+		| "<" -> boolToInt (a < b)
+		| ">" -> boolToInt (a > b)
+		| "<=" -> boolToInt (a <= b)
+		| ">=" -> boolToInt (a >= b)
+		| "==" -> boolToInt (a == b)
+		| "!=" -> boolToInt (a != b)
+		| "&&" -> boolToInt ((a != 0) && (b != 0))
+		| "!!" -> boolToInt ((a != 0) || (b != 0))
+
+	(* Expression evaluator
+		 val eval : state -> expr -> int
+	 
+	   Takes a state and an expression, and returns the value of the expression in 
+	   the given state.
+	*)
+	let rec eval s e = match e with
+	  | Const n				-> n
+	  | Var v				-> s v
+	  | Binop (op, a, b)	-> evalBinop op (eval s a)(eval s b)  
+	  | _ 					-> failwith "[Expr] Unimplemented expression type"
 
   end
                     
@@ -65,7 +85,17 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
+    let rec eval ((s, i, o) as conf) stmt = match stmt with
+		| Read v ->
+			(
+				match i with
+					| n::i -> (Expr.update v n s), i, o
+					| _ -> failwith "[Stmt] No input for Read statement"
+			)
+		| Write x		-> s, i, o @ [Expr.eval s x]
+		| Assign (v, x)	-> (Expr.update v (Expr.eval s x) s), i, o
+		| Seq (t1, t2)	-> eval (eval conf t1) t2
+		| _ 			-> failwith "[Stmt] Unsupported statement"
                                                          
   end
 
