@@ -5,6 +5,8 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+
+open Ostap
        
 (* Simple expressions: syntax and semantics *)
 module Expr =
@@ -37,25 +39,56 @@ module Expr =
     *)
     let update x v s = fun y -> if x = y then v else s y
 
-    (* Expression evaluator
+    let boolToInt n = if n then 1 else 0
 
-          val eval : state -> t -> int
- 
+    let evalBinop op a b = match op with
+      | "+" -> a + b
+      | "-" -> a - b
+      | "*" -> a * b
+      | "/" -> a / b
+      | "%" -> a mod b
+      | "<" -> boolToInt (a < b)
+      | ">" -> boolToInt (a > b)
+      | "<=" -> boolToInt (a <= b)
+      | ">=" -> boolToInt (a >= b)
+      | "==" -> boolToInt (a == b)
+      | "!=" -> boolToInt (a != b)
+      | "&&" -> boolToInt ((a != 0) && (b != 0))
+      | "!!" -> boolToInt ((a != 0) || (b != 0))
+
+    (* Expression evaluator
+         val eval : state -> expr -> int
+     
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)
-    let eval _ = failwith "Not implemented yet"
-
-    (* Expression parser. You can use the following terminals:
-
-         IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
-         DECIMAL --- a decimal constant [0-9]+ as a string
-   
-    *)
+    let rec eval s e = match e with
+      | Const n          -> n
+      | Var v            -> s v
+      | Binop (op, a, b) -> evalBinop op (eval s a)(eval s b)  
+      | _                -> failwith "[Expr] Unimplemented expression type"
+      
+    let ostapOpToBinop op = ostap(- $(op)), (fun x y -> Binop (op, x, y))
+	  
+    (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
-    )
-
+	  expr:
+		!(Util.expr
+		(fun x -> x)
+		(
+		  Array.map (fun (a, ops) -> a, List.map ostapOpToBinop ops)
+		  [|
+		    `Lefta, ["!!"];
+		    `Lefta, ["&&"];
+		    `Nona , ["=="; "!="; "<="; ">="; "<"; ">"];
+		    `Lefta, ["+"; "-"];
+		    `Lefta, ["*"; "/"; "%"];
+		  |]
+		)
+		primary
+	  );
+	  primary: v:IDENT {Var v} | n:DECIMAL {Const n} | -"(" expr -")"
+	)
   end
                     
 (* Simple statements: syntax and sematics *)
@@ -78,13 +111,29 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
-
+    let rec eval ((s, i, o) as conf) stmt = match stmt with
+      | Read v ->
+        (
+          match i with
+            | n::i -> (Expr.update v n s), i, o
+            | _ -> failwith "[Stmt] No input for Read statement"
+        )
+      | Write x     -> s, i, o @ [Expr.eval s x]
+      | Assign (v, x)   -> (Expr.update v (Expr.eval s x) s), i, o
+      | Seq (t1, t2)    -> eval (eval conf t1) t2
+      | _           -> failwith "[Stmt] Unsupported statement"
+	  
     (* Statement parser *)
+
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      stmt:
+	      v:IDENT ":=" e:!(Expr.expr) {Assign(v, e)}
+		| "read" "(" x:IDENT ")" {Read x}
+		| "write" "(" e:!(Expr.expr) ")" {Write e};
+			
+	  parse: s:stmt ";" rest:parse {Seq(s, rest)} | stmt
     )
-      
+	
   end
 
 (* The top-level definitions *)
