@@ -26,30 +26,30 @@ type config = int list * Stmt.config
 let evalInstruction conf instr =
   let (stack, (s, i, o)) = conf in
   match instr with
-	| BINOP op -> (
-	  match stack with
-		| b :: a :: stack -> [Language.Expr.evalBinop op a b] @ stack, (s, i, o)
-		| a -> failwith (Printf.sprintf "[SM] Only one value on stack for binop %s" op)
-		| [] -> failwith (Printf.sprintf "[SM] No values on stack for binop %s" op)
-	)
-	| CONST n -> [n] @ stack, (s, i, o)
-	| READ -> (
-	  match i with
-		| n :: i -> [n] @ stack, (s, i, o)
-		| _ -> failwith "[SM] No input data for READ instruction"
-	)
-	| WRITE -> (
-	  match stack with
-		| n :: stack -> stack, (s, i, o @ [n])
-		| _ -> failwith "[SM] Empty stack on WRITE instruction"
-	)
-	| LD v -> [s v] @ stack, (s, i, o)
-	| ST v -> (
-	  match stack with
-		| n :: stack -> stack, ((Language.Expr.update v n s), i, o)
-		| _ -> failwith "[SM] Empty stack on ST instruction"
-	)
-	| _ -> failwith "[SM] Unsupported instruction"
+    | BINOP op -> (
+      match stack with
+        | b :: a :: stack -> [Language.Expr.evalBinop op a b] @ stack, (s, i, o)
+        | a -> failwith (Printf.sprintf "[SM] Only one value on stack for binop %s" op)
+        | [] -> failwith (Printf.sprintf "[SM] No values on stack for binop %s" op)
+    )
+    | CONST n -> [n] @ stack, (s, i, o)
+    | READ -> (
+      match i with
+        | n :: i -> [n] @ stack, (s, i, o)
+        | _ -> failwith "[SM] No input data for READ instruction"
+    )
+    | WRITE -> (
+      match stack with
+        | n :: stack -> stack, (s, i, o @ [n])
+        | _ -> failwith "[SM] Empty stack on WRITE instruction"
+    )
+    | LD v -> [s v] @ stack, (s, i, o)
+    | ST v -> (
+      match stack with
+        | n :: stack -> stack, ((Language.Expr.update v n s), i, o)
+        | _ -> failwith "[SM] Empty stack on ST instruction"
+    )
+    | _ -> failwith "[SM] Unsupported instruction"
 
 let eval conf p = List.fold_left evalInstruction conf p
 
@@ -70,12 +70,12 @@ let run p i = let (_, (_, _, o)) = eval ([], (Language.Expr.empty, i, [])) p in 
  *)
  
 let rec compileExpr t = match t with
-  | Language.Expr.Const n			-> [CONST n]
-  | Language.Expr.Var v				-> [LD v]
-  | Language.Expr.Binop (op, a, b)	-> (compileExpr a) @ (compileExpr b) @ [BINOP op]
+  | Language.Expr.Const n           -> [CONST n]
+  | Language.Expr.Var v             -> [LD v]
+  | Language.Expr.Binop (op, a, b)  -> (compileExpr a) @ (compileExpr b) @ [BINOP op]
 
 let rec compile p = match p with
-  | Language.Stmt.Read v		-> [READ; ST v]
-  | Language.Stmt.Write x		-> (compileExpr x) @ [WRITE]
-  | Language.Stmt.Assign (v, x)	-> (compileExpr x) @ [ST v]
-  | Language.Stmt.Seq (p1, p2)	-> (compile p1) @ (compile p2)
+  | Language.Stmt.Read v        -> [READ; ST v]
+  | Language.Stmt.Write x       -> (compileExpr x) @ [WRITE]
+  | Language.Stmt.Assign (v, x) -> (compileExpr x) @ [ST v]
+  | Language.Stmt.Seq (p1, p2)  -> (compile p1) @ (compile p2)

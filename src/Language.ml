@@ -69,26 +69,26 @@ module Expr =
       | _                -> failwith "[Expr] Unimplemented expression type"
       
     let ostapOpToBinop op = ostap(- $(op)), (fun x y -> Binop (op, x, y))
-	  
+      
     (* Statement parser *)
     ostap (
-	  expr:
-		!(Util.expr
-		(fun x -> x)
-		(
-		  Array.map (fun (a, ops) -> a, List.map ostapOpToBinop ops)
-		  [|
-		    `Lefta, ["!!"];
-		    `Lefta, ["&&"];
-		    `Nona , ["=="; "!="; "<="; ">="; "<"; ">"];
-		    `Lefta, ["+"; "-"];
-		    `Lefta, ["*"; "/"; "%"];
-		  |]
-		)
-		primary
-	  );
-	  primary: v:IDENT {Var v} | n:DECIMAL {Const n} | -"(" expr -")"
-	)
+      expr:
+        !(Util.expr
+        (fun x -> x)
+        (
+          Array.map (fun (a, ops) -> a, List.map ostapOpToBinop ops)
+          [|
+            `Lefta, ["!!"];
+            `Lefta, ["&&"];
+            `Nona , ["=="; "!="; "<="; ">="; "<"; ">"];
+            `Lefta, ["+"; "-"];
+            `Lefta, ["*"; "/"; "%"];
+          |]
+        )
+        primary
+      );
+      primary: v:IDENT {Var v} | n:DECIMAL {Const n} | -"(" expr -")"
+    )
   end
                     
 (* Simple statements: syntax and sematics *)
@@ -122,18 +122,18 @@ module Stmt =
       | Assign (v, x)   -> (Expr.update v (Expr.eval s x) s), i, o
       | Seq (t1, t2)    -> eval (eval conf t1) t2
       | _           -> failwith "[Stmt] Unsupported statement"
-	  
+      
     (* Statement parser *)
 
     ostap (
       stmt:
-	      v:IDENT ":=" e:!(Expr.expr) {Assign(v, e)}
-		| "read" "(" x:IDENT ")" {Read x}
-		| "write" "(" e:!(Expr.expr) ")" {Write e};
-			
-	  parse: s:stmt ";" rest:parse {Seq(s, rest)} | stmt
+          v:IDENT ":=" e:!(Expr.expr) {Assign(v, e)}
+        | "read" "(" x:IDENT ")" {Read x}
+        | "write" "(" e:!(Expr.expr) ")" {Write e};
+            
+      parse: s:stmt ";" rest:parse {Seq(s, rest)} | stmt
     )
-	
+    
   end
 
 (* The top-level definitions *)
