@@ -45,7 +45,7 @@ type instr =
 (* a non-conditional jump                               *) | Jmp   of string
 
 (* Instruction printer *)
-let show instr =
+let printInstr instr =
   let binop = function
   | "+"   -> "addl"
   | "-"   -> "subl"
@@ -54,7 +54,7 @@ let show instr =
   | "!!"  -> "orl" 
   | "^"   -> "xorl"
   | "cmp" -> "cmpl"
-  | _     -> failwith "unknown binary operator"
+  | _     -> failwith "[X86] Unknown binary operator"
   in
   let opnd = function
   | R i -> regs.(i)
@@ -79,6 +79,92 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+(* Single instruction compilation
+
+     compileInstr : env -> prg -> env * instr list
+
+   Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
+   of x86 instructions
+*)
+
+let inRegister x = match x with
+  | R _ -> true
+  | _ -> false
+
+let inMemory x = match x with
+  | S _ | M _ -> true
+  | _ -> false
+
+let movImpl a b = 
+  if (a = b) then []
+  else
+    if (inMemory a) && (inMemory b)
+      then [Mov (a, eax); Mov (eax, b)]
+      else [Mov (a, b)]
+
+let compSuffix op = match op with
+  | "<"  -> "l"
+  | "<=" -> "le"
+  | ">"  -> "g"
+  | ">=" -> "ge"
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | _    -> failwith "[X86] Unsupported comparator"
+  
+let zeroOut reg = Binop("^", reg, reg)
+   
+let compileInstr env i =
+  match i with
+  | BINOP op -> (
+    let b, a, env = env#pop2 in
+    match op with
+      | "+" | "-" | "*" ->
+        if inRegister a
+          then env#push a, [Binop(op, b, a)]
+          else (
+            if inRegister b
+              then env#push b, [Binop(op, a, b)]
+              else env#push a, [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)]
+        )
+      | "/" | "%" -> 
+        let result = match op with
+          | "/" -> eax
+          | _ -> edx
+        in
+        env#push a, [Mov(a, eax); Cltd; IDiv b; Mov (result, a)]
+      | "&&" | "!!" ->
+        (*This one could be optimised a bit*)
+        env#push a, [
+          zeroOut eax; zeroOut edx;
+          Binop ("cmp", L 0, a); Set ("nz", "%al");
+          Binop ("cmp", L 0, b); Set ("nz", "%dl");
+          Binop (op, eax, edx); Mov (edx, a)
+        ]
+      | "<" | "<=" | ">" | ">=" | "==" | "!=" ->
+        env#push a,
+        if inRegister a
+          then [zeroOut eax; Binop ("cmp", b, a); Set(compSuffix op, "%al"); Mov (eax, a)] 
+          else [zeroOut eax; Mov (a, edx); Binop ("cmp", b, edx); Set (compSuffix op, "%al"); Mov (eax, a)]
+      | _ -> failwith "[X86] Unsupported binary operator"
+  )
+  | CONST n ->
+    let a, env = env#allocate in
+    env, [Mov (L n, a)]
+  | READ ->
+    let a, env = env#allocate in
+    env, [Call "Lread"; Mov (eax, a)]
+  | WRITE ->
+    let a, env = env#pop in
+    env, [Push a; Call "Lwrite"; Pop eax]
+  | LD v ->
+    let s, env = (env#global v)#allocate in
+    let name = env#loc v in
+    env, movImpl (M name) s
+  | ST v ->
+    let s, env = (env#global v)#pop in
+    let name = env#loc v in
+    env, movImpl s (M name);;
+    
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -86,8 +172,15 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
 
+let rec compile env p =
+  match p with
+    | [] -> env, []
+    | i::p ->
+        let env, x86p1 = compileInstr env i in
+        let env, x86p2 = compile env p in
+        env, x86p1 @ x86p2
+    
 (* A set of strings *)           
 module S = Set.Make (String)
 
@@ -104,14 +197,16 @@ class env =
     (* allocates a fresh position on a symbolic stack *)
     method allocate =    
       let x, n =
+
 	let rec allocate' = function
 	| []                            -> ebx     , 0
 	| (S n)::_                      -> S (n+1) , n+1
 	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-        | (M _)::s                      -> allocate' s
+    | (M _)::s                      -> allocate' s
 	| _                             -> S 0     , 1
 	in
 	allocate' stack
+
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
 
@@ -119,10 +214,16 @@ class env =
     method push y = {< stack = y::stack >}
 
     (* pops one operand from the symbolic stack *)
-    method pop  = let x::stack' = stack in x, {< stack = stack' >}
+
+    method pop  = match stack with
+      | x::stack' -> x, {< stack = stack' >}
+      | _ -> failwith "[X86] Not enough items on stack (pop)"
 
     (* pops two operands from the symbolic stack *)
-    method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
+    method pop2 = match stack with
+      | x::y::stack' -> x, y, {< stack = stack' >}
+      | [x] -> failwith "[X86] Not enough items on stack (expected 2, got 1)"
+      | _ -> failwith "[X86] Not enough items on stack (expected 2, got 0)"
 
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
@@ -161,7 +262,7 @@ let genasm prog =
   Buffer.add_string asm "\t.globl\tmain\n";
   Buffer.add_string asm "main:\n";
   List.iter
-    (fun i -> Buffer.add_string asm (Printf.sprintf "%s\n" @@ show i))
+    (fun i -> Buffer.add_string asm (Printf.sprintf "%s\n" @@ printInstr i))
     code;
   Buffer.contents asm
 
