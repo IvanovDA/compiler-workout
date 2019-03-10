@@ -163,7 +163,12 @@ let compileInstr env i =
   | ST v ->
     let s, env = (env#global v)#pop in
     let name = env#loc v in
-    env, movImpl s (M name);;
+    env, movImpl s (M name)
+  | LABEL label -> env, [Label label]
+  | JMP label -> env, [Jmp label]
+  | CJMP(needZero, label) ->
+    let s, env = env#pop in
+	env, [Binop("cmp", L 0, s); CJmp(needZero, label)];;
     
 (* Symbolic stack machine evaluator
 

@@ -29,35 +29,44 @@ type config = int list * Stmt.config
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                         
 
-let evalInstruction conf instr =
-  let (stack, (s, i, o)) = conf in
-  match instr with
-    | BINOP op -> (
-      match stack with
-        | b :: a :: stack -> [Language.Expr.evalBinop op a b] @ stack, (s, i, o)
-        | a -> failwith (Printf.sprintf "[SM] Only one value on stack for binop %s" op)
-        | [] -> failwith (Printf.sprintf "[SM] No values on stack for binop %s" op)
-    )
-    | CONST n -> [n] @ stack, (s, i, o)
-    | READ -> (
-      match i with
-        | n :: i -> [n] @ stack, (s, i, o)
-        | _ -> failwith "[SM] No input data for READ instruction"
-    )
-    | WRITE -> (
-      match stack with
-        | n :: stack -> stack, (s, i, o @ [n])
-        | _ -> failwith "[SM] Empty stack on WRITE instruction"
-    )
-    | LD v -> [s v] @ stack, (s, i, o)
-    | ST v -> (
-      match stack with
-        | n :: stack -> stack, ((Language.Expr.update v n s), i, o)
-        | _ -> failwith "[SM] Empty stack on ST instruction"
-    )
-    | _ -> failwith "[SM] Unsupported instruction"
-
-let eval conf p = List.fold_left evalInstruction conf p
+let rec eval env ((stack, (s, i, o)) as conf) p =
+  match p with
+    | [] -> conf
+	| instr::p -> match instr with
+      | BINOP op -> (
+        match stack with
+          | b::a::stack -> eval env ([Language.Expr.evalBinop op a b] @ stack, (s, i, o)) p
+          | a -> failwith (Printf.sprintf "[SM] Only one value on stack for binop %s" op)
+          | [] -> failwith (Printf.sprintf "[SM] No values on stack for binop %s" op)
+      )
+      | CONST n -> eval env ([n] @ stack, (s, i, o)) p
+      | READ -> (
+        match i with
+          | n::i -> eval env ([n] @ stack, (s, i, o)) p
+          | _ -> failwith "[SM] No input data for READ instruction"
+      )
+      | WRITE -> (
+        match stack with
+          | n::stack -> eval env (stack, (s, i, o @ [n])) p
+          | _ -> failwith "[SM] Empty stack on WRITE instruction"
+      )
+      | LD v -> eval env ([s v] @ stack, (s, i, o)) p
+      | ST v -> (
+        match stack with
+          | n::stack -> eval env (stack, ((Language.Expr.update v n s), i, o)) p
+          | _ -> failwith "[SM] Empty stack on ST instruction"
+      )
+  	  | LABEL _ -> eval env conf p
+	  | JMP label -> eval env conf (env#labeled label)
+	  | CJMP (needZero, label) -> (
+		match stack with
+		  | [] -> failwith "[SM] CJMP without a value to evaluate"
+		  | n::stack ->
+		    if((n = 0) = (needZero = "z"))
+			  then eval env conf (env#labeled label)
+			  else eval env conf p
+	  )
+      | _ -> failwith "[SM] Unsupported instruction" 
 
 (* Top-level evaluation
 
@@ -66,7 +75,12 @@ let eval conf p = List.fold_left evalInstruction conf p
    Takes a program, an input stream, and returns an output stream this program calculates
 *)
 
+let rec debugPrint p = match p with
+  | i::p -> Printf.printf "%s\n" (GT.transform(insn) new @insn[show] () i); debugPrint p
+  | _ -> ()
+
 let run p i =
+(*  debugPrint p; *)
   let module M = Map.Make (String) in
   let rec make_map m = function
   | []              -> m
@@ -84,13 +98,49 @@ let run p i =
    stack machine
 *)
 
-let rec compileExpr t = match t with
-  | Language.Expr.Const n           -> [CONST n]
-  | Language.Expr.Var v             -> [LD v]
-  | Language.Expr.Binop (op, a, b)  -> compileExpr a @ compileExpr b @ [BINOP op]
+(* Storage/generator for labels
+	 Stores last label indices for if, while, repeat, in that order
+*)
 
-let rec compile p = match p with
-  | Language.Stmt.Read v        -> [READ; ST v]
-  | Language.Stmt.Write x       -> compileExpr x @ [WRITE]
-  | Language.Stmt.Assign (v, x) -> compileExpr x @ [ST v]
-  | Language.Stmt.Seq (p1, p2)  -> compile p1 @ compile p2
+type labelStorage = int * int * int
+
+let labelName op counter = Printf.sprintf "LABEL_%s%d" op counter
+
+let rec compileExpr t = match t with
+  | Language.Expr.Const n         -> [CONST n]
+  | Language.Expr.Var v           -> [LD v]
+  | Language.Expr.Binop(op, a, b) -> compileExpr a @ compileExpr b @ [BINOP op]
+
+let rec compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p with
+  | Language.Stmt.Read v             -> labels, [READ; ST v]
+  | Language.Stmt.Write x            -> labels, compileExpr x @ [WRITE]
+  | Language.Stmt.Assign(v, x)       -> labels, compileExpr x @ [ST v]
+  | Language.Stmt.Seq(p1, p2)        -> 
+    let labels, code1 = compileImpl labels p1 in
+	let labels, code2 = compileImpl labels p2 in
+    labels, code1 @ code2
+  | Language.Stmt.Skip			     -> labels, []
+  | Language.Stmt.If(cond, p1, p2)   ->
+	let thenLabel, exitLabel = labelName "IF" labelIf, labelName "IF" (labelIf + 1) in
+	let labels, codeElse = compileImpl (labelIf + 2, labelWhile, labelRepeat) p2 in
+	let labels, codeThen = compileImpl labels p1 in
+	labels,
+	compileExpr cond @ [CJMP("nz", thenLabel)] @
+	codeElse @ [JMP(exitLabel); LABEL(thenLabel)] @ 
+	codeThen @ [LABEL(exitLabel)]
+  | Language.Stmt.While(cond, body)  ->
+    let condLabel, bodyLabel = labelName "WHILE" labelWhile, labelName "WHILE" (labelWhile + 1) in
+	let labels, codeBody = compileImpl (labelIf, labelWhile + 2, labelRepeat) body in
+	labels,
+	[JMP(condLabel); LABEL(bodyLabel)] @
+	codeBody @ [LABEL(condLabel)] @
+	compileExpr cond @ [CJMP("nz", bodyLabel)]
+  | Language.Stmt.Repeat(body, cond) ->
+    let bodyLabel = labelName "REPEAT" labelRepeat in
+	let labels, codeBody = compileImpl (labelIf, labelWhile, labelRepeat + 1) body in
+	labels,
+	[LABEL(bodyLabel)] @ codeBody @ compileExpr cond @ [CJMP("z", bodyLabel)]
+  
+let compile p =
+  let _, code = compileImpl (0, 0, 0) p in
+  code
