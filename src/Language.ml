@@ -121,34 +121,34 @@ module Stmt =
             | n::i -> (Expr.update v n s), i, o
             | _ -> failwith "[Stmt] No input for Read statement"
         )
-      | Write x       	   -> s, i, o @ [Expr.eval s x]
-      | Assign(v, x) 	   -> (Expr.update v (Expr.eval s x) s), i, o
-      | Seq(t1, t2)  	   -> eval (eval conf t1) t2
-	  | Skip 		       -> conf
-	  | If(cond, p1, p2)   -> if (Expr.eval s cond != 0) then eval conf p1 else eval conf p2
-	  | While(cond, body)  -> eval conf (if (Expr.eval s cond != 0) then Seq(body, While(cond, body)) else Skip)
-	  | Repeat(body, cond) ->
-		let (s, _, _) as conf = eval conf body in
-		eval conf (if (Expr.eval s cond == 0) then Repeat(body, cond) else Skip)
+      | Write x            -> s, i, o @ [Expr.eval s x]
+      | Assign(v, x)       -> (Expr.update v (Expr.eval s x) s), i, o
+      | Seq(t1, t2)        -> eval (eval conf t1) t2
+      | Skip               -> conf
+      | If(cond, p1, p2)   -> if (Expr.eval s cond != 0) then eval conf p1 else eval conf p2
+      | While(cond, body)  -> eval conf (if (Expr.eval s cond != 0) then Seq(body, While(cond, body)) else Skip)
+      | Repeat(body, cond) ->
+        let (s, _, _) as conf = eval conf body in
+        eval conf (if (Expr.eval s cond == 0) then Repeat(body, cond) else Skip)
       | _           -> failwith "[Stmt] Unsupported statement"
       
     (* Statement parser *)
 
     ostap (
-	  else_branch:
-	      "fi" {Skip}
-	    | "else" body:!(parse) "fi" {body}
-		| "elif" cond:!(Expr.expr) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)};
-	
+      else_branch:
+          "fi" {Skip}
+        | "else" body:!(parse) "fi" {body}
+        | "elif" cond:!(Expr.expr) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)};
+    
       stmt:
           v:IDENT ":=" e:!(Expr.expr) {Assign(v, e)}
         | "read" "(" x:IDENT ")" {Read x}
         | "write" "(" e:!(Expr.expr) ")" {Write e}
-		| "if" cond:!(Expr.expr) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)}
-		| "while" cond:!(Expr.expr) "do" body:!(parse) "od" {While(cond, body)}
-		| "for" init:!(stmt) "," cond:!(Expr.expr) "," step:!(stmt) "do" body:!(parse) "od" {Seq(init, While(cond, Seq(body, step)))}
-		| "repeat" body:!(parse) "until" cond:!(Expr.expr) {Repeat(body, cond)}
-		| "skip" {Skip};
+        | "if" cond:!(Expr.expr) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)}
+        | "while" cond:!(Expr.expr) "do" body:!(parse) "od" {While(cond, body)}
+        | "for" init:!(stmt) "," cond:!(Expr.expr) "," step:!(stmt) "do" body:!(parse) "od" {Seq(init, While(cond, Seq(body, step)))}
+        | "repeat" body:!(parse) "until" cond:!(Expr.expr) {Repeat(body, cond)}
+        | "skip" {Skip};
             
       parse: s:stmt ";" rest:parse {Seq(s, rest)} | stmt
     )

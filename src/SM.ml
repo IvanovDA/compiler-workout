@@ -32,7 +32,7 @@ type config = int list * Stmt.config
 let rec eval env ((stack, (s, i, o)) as conf) p =
   match p with
     | [] -> conf
-	| instr::p -> match instr with
+    | instr::p -> match instr with
       | BINOP op -> (
         match stack with
           | b::a::stack -> eval env ([Language.Expr.evalBinop op a b] @ stack, (s, i, o)) p
@@ -56,16 +56,16 @@ let rec eval env ((stack, (s, i, o)) as conf) p =
           | n::stack -> eval env (stack, ((Language.Expr.update v n s), i, o)) p
           | _ -> failwith "[SM] Empty stack on ST instruction"
       )
-  	  | LABEL _ -> eval env conf p
-	  | JMP label -> eval env conf (env#labeled label)
-	  | CJMP (needZero, label) -> (
-		match stack with
-		  | [] -> failwith "[SM] CJMP without a value to evaluate"
-		  | n::stack ->
-		    if((n = 0) = (needZero = "z"))
-			  then eval env conf (env#labeled label)
-			  else eval env conf p
-	  )
+      | LABEL _ -> eval env conf p
+      | JMP label -> eval env conf (env#labeled label)
+      | CJMP (needZero, label) -> (
+        match stack with
+          | [] -> failwith "[SM] CJMP without a value to evaluate"
+          | n::stack ->
+            if((n = 0) = (needZero = "z"))
+              then eval env conf (env#labeled label)
+              else eval env conf p
+      )
       | _ -> failwith "[SM] Unsupported instruction" 
 
 (* Top-level evaluation
@@ -99,7 +99,7 @@ let run p i =
 *)
 
 (* Storage/generator for labels
-	 Stores last label indices for if, while, repeat, in that order
+     Stores last label indices for if, while, repeat, in that order
 *)
 
 type labelStorage = int * int * int
@@ -117,29 +117,29 @@ let rec compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p w
   | Language.Stmt.Assign(v, x)       -> labels, compileExpr x @ [ST v]
   | Language.Stmt.Seq(p1, p2)        -> 
     let labels, code1 = compileImpl labels p1 in
-	let labels, code2 = compileImpl labels p2 in
+    let labels, code2 = compileImpl labels p2 in
     labels, code1 @ code2
-  | Language.Stmt.Skip			     -> labels, []
+  | Language.Stmt.Skip               -> labels, []
   | Language.Stmt.If(cond, p1, p2)   ->
-	let thenLabel, exitLabel = labelName "IF" labelIf, labelName "IF" (labelIf + 1) in
-	let labels, codeElse = compileImpl (labelIf + 2, labelWhile, labelRepeat) p2 in
-	let labels, codeThen = compileImpl labels p1 in
-	labels,
-	compileExpr cond @ [CJMP("nz", thenLabel)] @
-	codeElse @ [JMP(exitLabel); LABEL(thenLabel)] @ 
-	codeThen @ [LABEL(exitLabel)]
+    let thenLabel, exitLabel = labelName "IF" labelIf, labelName "IF" (labelIf + 1) in
+    let labels, codeElse = compileImpl (labelIf + 2, labelWhile, labelRepeat) p2 in
+    let labels, codeThen = compileImpl labels p1 in
+    labels,
+    compileExpr cond @ [CJMP("nz", thenLabel)] @
+    codeElse @ [JMP(exitLabel); LABEL(thenLabel)] @ 
+    codeThen @ [LABEL(exitLabel)]
   | Language.Stmt.While(cond, body)  ->
     let condLabel, bodyLabel = labelName "WHILE" labelWhile, labelName "WHILE" (labelWhile + 1) in
-	let labels, codeBody = compileImpl (labelIf, labelWhile + 2, labelRepeat) body in
-	labels,
-	[JMP(condLabel); LABEL(bodyLabel)] @
-	codeBody @ [LABEL(condLabel)] @
-	compileExpr cond @ [CJMP("nz", bodyLabel)]
+    let labels, codeBody = compileImpl (labelIf, labelWhile + 2, labelRepeat) body in
+    labels,
+    [JMP(condLabel); LABEL(bodyLabel)] @
+    codeBody @ [LABEL(condLabel)] @
+    compileExpr cond @ [CJMP("nz", bodyLabel)]
   | Language.Stmt.Repeat(body, cond) ->
     let bodyLabel = labelName "REPEAT" labelRepeat in
-	let labels, codeBody = compileImpl (labelIf, labelWhile, labelRepeat + 1) body in
-	labels,
-	[LABEL(bodyLabel)] @ codeBody @ compileExpr cond @ [CJMP("z", bodyLabel)]
+    let labels, codeBody = compileImpl (labelIf, labelWhile, labelRepeat + 1) body in
+    labels,
+    [LABEL(bodyLabel)] @ codeBody @ compileExpr cond @ [CJMP("z", bodyLabel)]
   
 let compile p =
   let _, code = compileImpl (0, 0, 0) p in

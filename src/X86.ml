@@ -168,7 +168,7 @@ let compileInstr env i =
   | JMP label -> env, [Jmp label]
   | CJMP(needZero, label) ->
     let s, env = env#pop in
-	env, [Binop("cmp", L 0, s); CJmp(needZero, label)];;
+    env, [Binop("cmp", L 0, s); CJmp(needZero, label)];;
     
 (* Symbolic stack machine evaluator
 
@@ -203,14 +203,14 @@ class env =
     method allocate =    
       let x, n =
 
-	let rec allocate' = function
-	| []                            -> ebx     , 0
-	| (S n)::_                      -> S (n+1) , n+1
-	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
+    let rec allocate' = function
+    | []                            -> ebx     , 0
+    | (S n)::_                      -> S (n+1) , n+1
+    | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
     | (M _)::s                      -> allocate' s
-	| _                             -> S 0     , 1
-	in
-	allocate' stack
+    | _                             -> S 0     , 1
+    in
+    allocate' stack
 
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
