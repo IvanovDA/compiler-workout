@@ -117,8 +117,8 @@ let compileInstr env i =
           then env#push a, [Binop(op, b, a)]
           else (
             if inRegister b
-            then env#push b, [Binop(op, a, b)]
-            else env#push a, [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)]
+              then env#push b, [Binop(op, a, b)]
+              else env#push a, [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)]
         )
       | "/" | "%" -> 
         let result = match op with
