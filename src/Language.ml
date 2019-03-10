@@ -5,6 +5,7 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+open Ostap
 
 (* States *)
 module State =
@@ -35,7 +36,7 @@ module State =
     let drop_scope st st' = {st' with g = st.g}
 
   end
-    
+
 (* Simple expressions: syntax and semantics *)
 module Expr =
   struct
@@ -55,11 +56,38 @@ module Expr =
         +, -                 --- addition, subtraction
         *, /, %              --- multiplication, division, reminder
     *)
-      
-    (* Expression evaluator
+                                                            
+    (* State: a partial map from variables to integer values. *)
+    type state = string -> int 
 
-          val eval : state -> t -> int
- 
+    (* Empty state: maps every variable into nothing. *)
+    let empty = fun x -> failwith (Printf.sprintf "Undefined variable %s" x)
+
+    (* Update: non-destructively "modifies" the state s by binding the variable x 
+      to value v and returns the new state.
+    *)
+    let update x v s = fun y -> if x = y then v else s y
+
+    let boolToInt n = if n then 1 else 0
+
+    let evalBinop op a b = match op with
+      | "+" -> a + b
+      | "-" -> a - b
+      | "*" -> a * b
+      | "/" -> a / b
+      | "%" -> a mod b
+      | "<" -> boolToInt (a < b)
+      | ">" -> boolToInt (a > b)
+      | "<=" -> boolToInt (a <= b)
+      | ">=" -> boolToInt (a >= b)
+      | "==" -> boolToInt (a == b)
+      | "!=" -> boolToInt (a != b)
+      | "&&" -> boolToInt ((a != 0) && (b != 0))
+      | "!!" -> boolToInt ((a != 0) || (b != 0))
+
+    (* Expression evaluator
+         val eval : state -> expr -> int
+     
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)                                                       
@@ -88,6 +116,7 @@ module Expr =
       | Const n -> n
       | Var   x -> State.eval st x
       | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
+	  | _                -> failwith "[Expr] Unimplemented expression type"
 
     (* Expression parser. You can use the following terminals:
 
@@ -98,26 +127,26 @@ module Expr =
     ostap (                                      
       parse:
 	  !(Ostap.Util.expr 
-             (fun x -> x)
-	     (Array.map (fun (a, s) -> a, 
-                           List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
-                        ) 
-              [|                
-		`Lefta, ["!!"];
-		`Lefta, ["&&"];
-		`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
-		`Lefta, ["+" ; "-"];
-		`Lefta, ["*" ; "/"; "%"];
-              |] 
-	     )
-	     primary);
+        (fun x -> x)
+	    (Array.map (
+		  fun (a, s) -> a, 
+            List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
+          ) 
+          [|                
+			`Lefta, ["!!"];
+			`Lefta, ["&&"];
+			`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+			`Lefta, ["+" ; "-"];
+			`Lefta, ["*" ; "/"; "%"];
+          |] 
+	    )
+	    primary);
       
       primary:
         n:DECIMAL {Const n}
       | x:IDENT   {Var x}
       | -"(" parse -")"
     )
-    
   end
                     
 (* Simple statements: syntax and sematics *)
@@ -135,7 +164,7 @@ module Stmt =
     (* loop with a pre-condition        *) | While  of Expr.t * t
     (* loop with a post-condition       *) | Repeat of t * Expr.t
     (* call a procedure                 *) | Call   of string * Expr.t list with show
-                                                                    
+
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = State.t * int list * int list 
 
@@ -150,13 +179,45 @@ module Stmt =
 
        which returns a list of formal parameters and a body for given definition
     *)
-    let rec eval _ = failwith "Not Implemented Yet"
-                                
-    (* Statement parser *)
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
-    )
+
+    let rec eval ((s, i, o) as conf) stmt = match stmt with
+      | Read v ->
+        (
+          match i with
+            | n::i -> (Expr.update v n s), i, o
+            | _ -> failwith "[Stmt] No input for Read statement"
+        )
+      | Write x            -> s, i, o @ [Expr.eval s x]
+      | Assign(v, x)       -> (Expr.update v (Expr.eval s x) s), i, o
+      | Seq(t1, t2)        -> eval (eval conf t1) t2
+      | Skip               -> conf
+      | If(cond, p1, p2)   -> if (Expr.eval s cond != 0) then eval conf p1 else eval conf p2
+      | While(cond, body)  -> eval conf (if (Expr.eval s cond != 0) then Seq(body, While(cond, body)) else Skip)
+      | Repeat(body, cond) ->
+        let (s, _, _) as conf = eval conf body in
+        eval conf (if (Expr.eval s cond == 0) then Repeat(body, cond) else Skip)
+      | _           -> failwith "[Stmt] Unsupported statement"
       
+    (* Statement parser *)
+
+    ostap (
+      else_branch:
+          "fi" {Skip}
+        | "else" body:!(parse) "fi" {body}
+        | "elif" cond:!(Expr.expr) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)};
+    
+      stmt:
+          v:IDENT ":=" e:!(Expr.expr) {Assign(v, e)}
+        | "read" "(" x:IDENT ")" {Read x}
+        | "write" "(" e:!(Expr.expr) ")" {Write e}
+        | "if" cond:!(Expr.expr) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)}
+        | "while" cond:!(Expr.expr) "do" body:!(parse) "od" {While(cond, body)}
+        | "for" init:!(stmt) "," cond:!(Expr.expr) "," step:!(stmt) "do" body:!(parse) "od" {Seq(init, While(cond, Seq(body, step)))}
+        | "repeat" body:!(parse) "until" cond:!(Expr.expr) {Repeat(body, cond)}
+        | "skip" {Skip};
+            
+      parse: s:stmt ";" rest:parse {Seq(s, rest)} | stmt
+    )
   end
 
 (* Function and procedure definitions *)
