@@ -30,11 +30,17 @@ module State =
     let eval s x = (if List.mem x s.scope then s.l else s.g) x
 
     (* Creates a new scope, based on a given state *)
-    let push_scope st xs = {empty with g = st.g; scope = xs}
+    let enter st xs = {empty with g = st.g; scope = xs}
 
     (* Drops a scope *)
-    let drop_scope st st' = {st' with g = st.g}
+    let leave st st' = {st' with g = st.g}
 
+    let dump s =
+      let x = try eval s "x" with _ -> -1 in
+      let y = try eval s "y" with _ -> -1 in
+      let z = try eval s "z" with _ -> -1 in
+      Printf.printf "x = %d; y = %d; z = %d;\n" x y z;
+    
   end
 
 (* Simple expressions: syntax and semantics *)
@@ -47,8 +53,9 @@ module Expr =
     @type t =
     (* integer constant *) | Const of int
     (* variable         *) | Var   of string
-    (* binary operator  *) | Binop of string * t * t with show
-
+    (* binary operator  *) | Binop of string * t * t 
+    (* function call    *) | Call  of string * t list with show
+    
     (* Available binary operators:
         !!                   --- disjunction
         &&                   --- conjunction
@@ -80,19 +87,53 @@ module Expr =
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
 
     let evalBinop op a b = to_func op a b
-	  
-	(* Expression evaluator
-         val eval : state -> expr -> int
-     
-       Takes a state and an expression, and returns the value of the expression in 
-       the given state.
-    *)
-    let rec eval (st:State.t) (expr:t) =      
-      match expr with
-      | Const n -> n
-      | Var   x -> State.eval st x
-      | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
+    
+    (* The type of configuration: a state, an input stream, an output stream, an optional value *)
+    type config = State.t * int list * int list * int option
+      
+    (* Expression evaluator
 
+          val eval : env -> config -> t -> config
+
+
+       Takes an environment, a configuration and an expresion, and returns another configuration. The 
+       environment supplies the following method
+
+           method definition : env -> string -> int list -> config -> config
+
+       which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration, 
+       an returns a pair: the return value for the call and the resulting configuration
+    *)
+    
+    let rec ensureRetval env conf expr =
+      let (s, i, o, r) = eval env conf expr in (
+        match r with
+          | Some n -> (s, i, o, r), n
+          | None -> failwith "[Stmt] A return value was expected whereas void was provided."
+      )
+    and eval env ((s, i, o, r) as conf) (expr:t) = 
+      match expr with
+      | Const n          -> (s, i, o, Some n)
+      | Var   x          -> (s, i, o, Some (State.eval s x))
+      | Binop(op, x, y)  ->
+        let (conf, r1) = ensureRetval env conf x in
+        let (conf, r2) = ensureRetval env conf y in
+        (s, i, o, Some (to_func op r1 r2))
+      | Call(name, args) ->
+        let rec evalArgs conf args = match args with
+          | [] -> conf, []
+          | arg::args -> (
+            let (s, i, o, r) = eval env conf arg in
+            match r with
+              | None -> failwith "[Expr] An argument provided to a function is void."
+              | Some n ->
+                let conf, argvals = evalArgs (s, i, o, r) args in
+                conf, n::argvals
+          )
+        in
+        let (conf, argvals) = evalArgs conf args in
+        env#definition env name argvals conf
+        
     (* Expression parser. You can use the following terminals:
 
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
@@ -101,21 +142,21 @@ module Expr =
     *)
     ostap (                                      
       parse:
-	  !(Ostap.Util.expr 
+      !(Ostap.Util.expr 
         (fun x -> x)
-	    (Array.map (
-		  fun (a, s) -> a, 
+        (Array.map (
+          fun (a, s) -> a, 
             List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
           ) 
           [|                
-			`Lefta, ["!!"];
-			`Lefta, ["&&"];
-			`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
-			`Lefta, ["+" ; "-"];
-			`Lefta, ["*" ; "/"; "%"];
+            `Lefta, ["!!"];
+            `Lefta, ["&&"];
+            `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+            `Lefta, ["+" ; "-"];
+            `Lefta, ["*" ; "/"; "%"];
           |] 
-	    )
-	    primary);
+        )
+        primary);
       
       primary:
         n:DECIMAL {Const n}
@@ -138,16 +179,17 @@ module Stmt =
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
     (* loop with a post-condition       *) | Repeat of t * Expr.t
-    (* call a procedure                 *) | Call   of string * Expr.t list with show
+    (* call a procedure                 *) | Call   of string * Expr.t list
+    (* return statement                 *) | Return of Expr.t option with show
 
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = State.t * int list * int list 
 
     (* Statement evaluator
 
-         val eval : env -> config -> t -> config
+         val eval : env -> config -> t -> t -> config
 
-       Takes an environment, a configuration and a statement, and returns another configuration. The 
+       Takes an environment, a configuration, a statement and a residual statement, and returns another configuration. The 
        environment supplies the following method
 
            method definition : string -> (string list, string list, t)
@@ -155,58 +197,62 @@ module Stmt =
        which returns a list of formal parameters and a body for given definition
     *)
 
-    let rec eval env ((s, i, o) as conf) (stmt:t) =
-	  let checkCallCorrectness name args_expected args_given =
-	    let exp_len = List.length args_expected in
-		let act_len = List.length args_given in
-		if exp_len != act_len
-		  then failwith (Printf.sprintf "[Stmt] Incorrect amount of arguments in %s procedure call: needed %d, got %d" name exp_len act_len)
-	  in
-      (* Careful when functions will kick in: configuration can be mutated during expression evaluation *)
-      match stmt with
-        | Read v ->
-          (
-            match i with
-              | n::i -> (State.update v n s), i, o
-              | _ -> failwith "[Stmt] No input for Read statement"
-          )
-        | Write x            -> s, i, o @ [Expr.eval s x]
-        | Assign(v, x)       -> (State.update v (Expr.eval s x) s), i, o
-        | Seq(t1, t2)        -> eval env (eval env conf t1) t2
-        | Skip               -> conf
-        | If(cond, p1, p2)   -> if (Expr.eval s cond != 0) then eval env conf p1 else eval env conf p2
-        | While(cond, body)  -> eval env conf (if (Expr.eval s cond != 0) then Seq(body, While(cond, body)) else Skip)
-        | Repeat(body, cond) ->
-          let (s, _, _) as conf = eval env conf body in
-          eval env conf (if (Expr.eval s cond == 0) then Repeat(body, cond) else Skip)
-        | Call (name, args_provided)  ->
-		  let s_old = s in
-	      let (args, locs, body) = env#definition name in
-		  checkCallCorrectness name args args_provided;
-	      let argvals = List.map (fun arg -> Expr.eval s arg) args_provided in
-		  let rec setArgs vars vals s = match (vars, vals) with
-		    | ([], []) -> s
-			| (v::vars, n::vals) -> setArgs vars vals (State.update v n s)
-		    | _ -> failwith "" (*Impossible, but Ocaml doesn't see that*)
-	      in
-		  let s = setArgs args argvals (State.push_scope s (args @ locs)) in
-		  let (s, i, o) = eval env (s, i, o) body in
-		  (State.drop_scope s s_old, i, o)
-      
+    let rec eval env ((s, i, o, r) as conf) k (stmt:t) =
+      if (stmt = Skip)
+        then (
+          if (k = Skip)
+            then conf
+            else eval env conf Skip k
+        )
+        else match stmt with
+          | Read v ->
+            (
+              match i with
+                | n::i -> (State.update v n s), i, o, None
+                | _ -> failwith "[Stmt] No input for Read statement"
+            )
+          | Write x ->
+            let ((s, i, o, r), n) = Expr.ensureRetval env conf x in 
+            s, i, o @ [n], None
+          | Assign(v, x) ->
+            let ((s, i, o, r), n) = Expr.ensureRetval env conf x in
+            (State.update v n s), i, o, None
+          | Seq(t1, t2) -> 
+            let conf = eval env conf k t1 in
+            eval env conf k t2
+          | If(cond, p1, p2) -> 
+            let (conf, condVal) = Expr.ensureRetval env conf cond in
+            if (condVal != 0) then eval env conf k p1 else eval env conf k p2
+          | While(cond, body)  ->
+            let (conf, condVal) = Expr.ensureRetval env conf cond in
+            eval env conf k (if (condVal != 0) then Seq(body, While(cond, body)) else Skip)
+          | Repeat(body, cond) ->
+            let conf = eval env conf k body in
+            let (conf, condVal) = Expr.ensureRetval env conf cond in
+            eval env conf k (if (condVal = 0) then Repeat(body, cond) else Skip)
+          | Call(name, args_provided) ->
+            let conf = Expr.eval env conf (Expr.Call(name, args_provided)) in
+            eval env conf k Skip
+          | Return(Some t) ->
+            let (conf, _) = Expr.ensureRetval env conf t in
+            conf
+          | Return(None) -> conf
+          | _ -> failwith "[Stmt] Unsupported statement"
+          
     (* Statement parser *)
 
     ostap (
-	  else_branch:
+      else_branch:
           "fi" {Skip}
         | "else" body:!(parse) "fi" {body}
         | "elif" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)};
       arglist:
-	      v:!(Expr.parse) "," rest:!(arglist) {[v] @ rest} 
-		| v:!(Expr.parse) {[v]}
-		| empty {[]};
+          v:!(Expr.parse) "," rest:!(arglist) {[v] @ rest} 
+        | v:!(Expr.parse) {[v]}
+        | empty {[]};
       stmt:
           v:IDENT ":=" e:!(Expr.parse) {Assign(v, e)}
-		| name:IDENT "(" arglist:!(arglist) ")" {Call(name, arglist)}
+        | name:IDENT "(" arglist:!(arglist) ")" {Call(name, arglist)}
         | "read" "(" x:IDENT ")" {Read x}
         | "write" "(" e:!(Expr.parse) ")" {Write e}
         | "if" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)}
@@ -227,14 +273,14 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (             
-	  varlist:
-	      v:IDENT "," rest:!(varlist) {[v] @ rest} 
-		| v:IDENT {[v]}
-		| empty {[]};
-	  locals:
-	      "local" varlist:!(varlist) {varlist}
-		| empty {[]};
-	  parse: "fun" name:IDENT "(" args:!(varlist) ")" locs:!(locals) "{" body:!(Stmt.parse) "}"{(name, (args, locs, body))}
+      varlist:
+          v:IDENT "," rest:!(varlist) {[v] @ rest} 
+        | v:IDENT {[v]}
+        | empty {[]};
+      locals:
+          "local" varlist:!(varlist) {varlist}
+        | empty {[]};
+      parse: "fun" name:IDENT "(" args:!(varlist) ")" locs:!(locals) "{" body:!(Stmt.parse) "}"{(name, (args, locs, body))}
     )
 
   end
@@ -252,8 +298,21 @@ type t = Definition.t list * Stmt.t
 *)
 let eval (defs, body) i =
   let module M = Map.Make (String) in
-  let m        = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in  
-  let _, _, o  = Stmt.eval (object method definition f = snd @@ M.find f m end) (State.empty, i, []) body in o
+  let m          = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in  
+  let _, _, o, _ =
+    Stmt.eval
+      (object
+         method definition env f args (st, i, o, r) =
+           let xs, locs, s      = snd @@ M.find f m in
+           let st'              = List.fold_left (fun st (x, a) -> State.update x a st) (State.enter st (xs @ locs)) (List.combine xs args) in
+           let st'', i', o', r' = Stmt.eval env (st', i, o, r) Stmt.Skip s in
+           (State.leave st'' st, i', o', r')
+       end)
+      (State.empty, i, [], None)
+      Stmt.Skip
+      body
+  in
+  o
 
 (* Top-level parser *)
 let parse = ostap (!(Definition.parse)* !(Stmt.parse))

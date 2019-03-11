@@ -12,9 +12,11 @@ open Language
 (* a label                         *) | LABEL of string
 (* unconditional jump              *) | JMP   of string                                                                                                                
 (* conditional jump                *) | CJMP  of string * string
-(* begins procedure definition     *) | BEGIN of string list * string list
+(* begins procedure definition     *) | BEGIN of string * string list * string list
 (* end procedure definition        *) | END
-(* calls a procedure               *) | CALL  of string * int with show			(*name, expected argument amount*)
+(* calls a procedure               *) | CALL  of string * int * bool
+(* name, argc, is a function       *)
+(* returns from a function         *) | RET   of bool with show
                                                    
 (* The type for the stack machine program *)                                                               
 type prg = insn list
@@ -40,8 +42,7 @@ let rec eval env (conf:config) p =
       | BINOP op -> (
         match stack with
           | b::a::stack -> eval env (cst, [Language.Expr.evalBinop op a b] @ stack, (s, i, o)) p
-          | a -> failwith (Printf.sprintf "[SM] Only one value on stack for binop %s" op)
-          | [] -> failwith (Printf.sprintf "[SM] No values on stack for binop %s" op)
+          | _ -> failwith (Printf.sprintf "[SM] Not enough values on stack for binop %s" op)
       )
       | CONST n -> eval env (cst, [n] @ stack, (s, i, o)) p
       | READ -> (
@@ -70,21 +71,21 @@ let rec eval env (conf:config) p =
               then eval env conf (env#labeled label)
               else eval env conf p
       )
-	  | BEGIN(args, locs) ->
+	  | BEGIN(name, args, locs) ->
 		let rec setArgs args stack s = match (args, stack) with
 		  | ([], _) -> stack, s
 		  | (arg::args, n::stack) ->
 		    setArgs args stack (Language.State.update arg n s)
 	      | _ -> failwith "[SM] Not enough arguments for a procedure call."
 	    in
-		let stack, s = setArgs args stack (State.push_scope s (args @ locs)) in
+		let stack, s = setArgs args stack (State.enter s (args @ locs)) in
 		eval env (cst, stack, (s, i, o)) p
-	  | END -> (
+	  | END | RET _ -> (
 	    match cst with
 		  | [] -> conf
-		  | (p, old_scope)::cst -> eval env (cst, stack, (State.drop_scope s old_scope, i, o)) p
+		  | (p, old_scope)::cst -> eval env (cst, stack, (State.leave s old_scope, i, o)) p
 	  )
-	  | CALL(name, _) -> eval env ((p, s)::cst, stack, (s, i, o)) (env#labeled name)
+	  | CALL(name, _, _) -> eval env ((p, s)::cst, stack, (s, i, o)) (env#labeled name)
       | _ -> failwith (Printf.sprintf "[SM] Unsupported instruction %s" (GT.transform(insn) new @insn[show] () instr))
 
 (* Top-level evaluation
@@ -119,11 +120,16 @@ let labelName op counter = Printf.sprintf "LABEL_%s%d" op counter
 
 let rec compileExpr t = 
   match t with
-  | Language.Expr.Const n         -> [CONST n]
-  | Language.Expr.Var v           -> [LD v]
-  | Language.Expr.Binop(op, a, b) -> compileExpr a @ compileExpr b @ [BINOP op]
+  | Language.Expr.Const n          -> [CONST n]
+  | Language.Expr.Var v            -> [LD v]
+  | Language.Expr.Binop(op, a, b)  -> compileExpr a @ compileExpr b @ [BINOP op]
+  | Language.Expr.Call(name, args) -> compileArgs args @ [CALL(name, List.length args, true)]
 
-let rec compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p with
+and compileArgs args = match args with
+  | [] -> []
+  | (arg::args) -> compileExpr arg @ compileArgs args
+
+and compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p with
   | Language.Stmt.Read v             -> labels, [READ; ST v]
   | Language.Stmt.Write x            -> labels, compileExpr x @ [WRITE]
   | Language.Stmt.Assign(v, x)       -> labels, compileExpr x @ [ST v]
@@ -153,12 +159,10 @@ let rec compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p w
     labels,
     [LABEL(bodyLabel)] @ codeBody @ compileExpr cond @ [CJMP("z", bodyLabel)]
   | Language.Stmt.Call(name, argvals) ->
-	let rec compileArgs args = match args with
-	  | [] -> []
-	  | (arg::args) -> compileExpr arg @ compileArgs args
-	in
 	let n = List.length argvals in
-	labels, compileArgs argvals @ [CALL(name, n)]
+	labels, compileArgs argvals @ [CALL(name, n, false)]
+  | Language.Stmt.Return(None)        -> labels, [RET false]
+  | Language.Stmt.Return(Some e)      -> labels, compileExpr e @ [RET true]
   
 let rec compileFuns labels funs = match funs with
   | [] -> labels, []
@@ -166,7 +170,7 @@ let rec compileFuns labels funs = match funs with
     let (name, (args, locs, body)) = f in
 	let labels, code = compileImpl labels body in
 	let labels, rest = compileFuns labels funs in
-	labels, [LABEL name; BEGIN(args, locs)] @ code @ [END] @ rest
+	labels, [LABEL name; BEGIN(name, args, locs)] @ code @ [END] @ rest
   
 (* Stack machine compiler
 
