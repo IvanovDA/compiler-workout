@@ -14,7 +14,7 @@ open Language
 (* conditional jump                *) | CJMP  of string * string
 (* begins procedure definition     *) | BEGIN of string list * string list
 (* end procedure definition        *) | END
-(* calls a procedure               *) | CALL  of string with show
+(* calls a procedure               *) | CALL  of string * int with show			(*name, expected argument amount*)
                                                    
 (* The type for the stack machine program *)                                                               
 type prg = insn list
@@ -32,36 +32,37 @@ type config = (prg * State.t) list * int list * Stmt.config
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                         
 
-let rec eval env ((stack, (s, i, o)) as conf) p =
+let rec eval env (conf:config) p =
+  let cst, stack, (s, i, o) = conf in
   match p with
     | [] -> conf
     | instr::p -> match instr with
       | BINOP op -> (
         match stack with
-          | b::a::stack -> eval env ([Language.Expr.evalBinop op a b] @ stack, (s, i, o)) p
+          | b::a::stack -> eval env (cst, [Language.Expr.evalBinop op a b] @ stack, (s, i, o)) p
           | a -> failwith (Printf.sprintf "[SM] Only one value on stack for binop %s" op)
           | [] -> failwith (Printf.sprintf "[SM] No values on stack for binop %s" op)
       )
-      | CONST n -> eval env ([n] @ stack, (s, i, o)) p
+      | CONST n -> eval env (cst, [n] @ stack, (s, i, o)) p
       | READ -> (
         match i with
-          | n::i -> eval env ([n] @ stack, (s, i, o)) p
+          | n::i -> eval env (cst, [n] @ stack, (s, i, o)) p
           | _ -> failwith "[SM] No input data for READ instruction"
       )
       | WRITE -> (
         match stack with
-          | n::stack -> eval env (stack, (s, i, o @ [n])) p
+          | n::stack -> eval env (cst, stack, (s, i, o @ [n])) p
           | _ -> failwith "[SM] Empty stack on WRITE instruction"
       )
-      | LD v -> eval env ([s v] @ stack, (s, i, o)) p
-      | ST v -> (
+      | LD v -> eval env (cst, [State.eval s v] @ stack, (s, i, o)) p
+	  | ST v -> (
         match stack with
-          | n::stack -> eval env (stack, ((Language.Expr.update v n s), i, o)) p
+          | n::stack -> eval env (cst, stack, ((Language.State.update v n s), i, o)) p
           | _ -> failwith "[SM] Empty stack on ST instruction"
       )
       | LABEL _ -> eval env conf p
       | JMP label -> eval env conf (env#labeled label)
-      | CJMP (needZero, label) -> (
+      | CJMP(needZero, label) -> (
         match stack with
           | [] -> failwith "[SM] CJMP without a value to evaluate"
           | n::stack ->
@@ -69,7 +70,22 @@ let rec eval env ((stack, (s, i, o)) as conf) p =
               then eval env conf (env#labeled label)
               else eval env conf p
       )
-      | _ -> failwith "[SM] Unsupported instruction" 
+	  | BEGIN(args, locs) ->
+		let rec setArgs args stack s = match (args, stack) with
+		  | ([], _) -> stack, s
+		  | (arg::args, n::stack) ->
+		    setArgs args stack (Language.State.update arg n s)
+	      | _ -> failwith "[SM] Not enough arguments for a procedure call."
+	    in
+		let stack, s = setArgs args stack (State.push_scope s (args @ locs)) in
+		eval env (cst, stack, (s, i, o)) p
+	  | END -> (
+	    match cst with
+		  | [] -> conf
+		  | (p, old_scope)::cst -> eval env (cst, stack, (State.drop_scope s old_scope, i, o)) p
+	  )
+	  | CALL(name, _) -> eval env ((p, s)::cst, stack, (s, i, o)) (env#labeled name)
+      | _ -> failwith (Printf.sprintf "[SM] Unsupported instruction %s" (GT.transform(insn) new @insn[show] () instr))
 
 (* Top-level evaluation
 
@@ -93,14 +109,6 @@ let run p i =
   let m = make_map M.empty p in
   let (_, _, (_, _, o)) = eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [])) p in o
 
-(* Stack machine compiler
-
-     val compile : Language.t -> prg
-
-   Takes a program in the source language and returns an equivalent program for the
-   stack machine
-*)
-
 (* Storage/generator for labels
      Stores last label indices for if, while, repeat, in that order
 *)
@@ -109,7 +117,8 @@ type labelStorage = int * int * int
 
 let labelName op counter = Printf.sprintf "LABEL_%s%d" op counter
 
-let rec compileExpr t = match t with
+let rec compileExpr t = 
+  match t with
   | Language.Expr.Const n         -> [CONST n]
   | Language.Expr.Var v           -> [LD v]
   | Language.Expr.Binop(op, a, b) -> compileExpr a @ compileExpr b @ [BINOP op]
@@ -143,7 +152,31 @@ let rec compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p w
     let labels, codeBody = compileImpl (labelIf, labelWhile, labelRepeat + 1) body in
     labels,
     [LABEL(bodyLabel)] @ codeBody @ compileExpr cond @ [CJMP("z", bodyLabel)]
+  | Language.Stmt.Call(name, argvals) ->
+	let rec compileArgs args = match args with
+	  | [] -> []
+	  | (arg::args) -> compileExpr arg @ compileArgs args
+	in
+	let n = List.length argvals in
+	labels, compileArgs argvals @ [CALL(name, n)]
   
-let compile p =
-  let _, code = compileImpl (0, 0, 0) p in
-  code
+let rec compileFuns labels funs = match funs with
+  | [] -> labels, []
+  | f::funs ->
+    let (name, (args, locs, body)) = f in
+	let labels, code = compileImpl labels body in
+	let labels, rest = compileFuns labels funs in
+	labels, [LABEL name; BEGIN(args, locs)] @ code @ [END] @ rest
+  
+(* Stack machine compiler
+
+     val compile : Language.t -> prg
+
+   Takes a program in the source language and returns an equivalent program for the
+   stack machine
+*)
+  
+let compile (funs, p) =
+  let labels, funscode = compileFuns (0, 0, 0) funs in
+  let _, code = compileImpl labels p in
+  code @ [END] @ funscode

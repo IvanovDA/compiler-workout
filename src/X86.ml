@@ -72,7 +72,7 @@ let printInstr instr =
   | Pop    s           -> Printf.sprintf "\tpopl\t%s"      (opnd s)
   | Ret                -> "\tret"
   | Call   p           -> Printf.sprintf "\tcall\t%s" p
-  | Label  l           -> Printf.sprintf "%s:\n" l
+  | Label  l           -> Printf.sprintf "%s:\arg_amount" l
   | Jmp    l           -> Printf.sprintf "\tjmp\t%s" l
   | CJmp  (s , l)      -> Printf.sprintf "\tj%s\t%s" s l
 
@@ -113,6 +113,36 @@ let compSuffix op = match op with
   
 let zeroOut reg = Binop("^", reg, reg)
    
+let compileCall env name arg_amount =
+  let p = true in
+  (*let name =
+	match name.[0] with '.' -> "B" ^ String.sub name 1 (String.length name - 1) | _ -> name
+  in*)
+  let pushr, popr =
+	List.split @@ List.map (fun r -> (Push r, Pop r)) (env#live_registers arg_amount)
+  in
+  let env, code =
+	if arg_amount = 0
+	then env, pushr @ [Call name] @ (List.rev popr)
+	else
+	  let rec push_args env acc = function
+	  | 0 -> env, acc
+	  | arg_amount -> let x, env = env#pop in
+			 push_args env ((Push x)::acc) (arg_amount-1)
+	  in
+	  let env, pushs = push_args env [] arg_amount in
+	  let pushs      =
+		match name with
+		| "Barray" -> List.rev @@ (Push (L arg_amount))     :: pushs
+		| "Bsta"   ->
+		   let x::v::is = List.rev pushs in               
+		   is @ [x; v] @ [Push (L (arg_amount-2))]
+		| _  -> List.rev pushs 
+	  in
+	  env, pushr @ pushs @ [Call name; Binop ("+", L (arg_amount*4), esp)] @ (List.rev popr)
+  in
+  (if p then env, code else let y, env = env#allocate in env, code @ [Mov (eax, y)])
+   
 let compileInstr env i =
   match i with
   | BINOP op -> (
@@ -147,9 +177,9 @@ let compileInstr env i =
           else [zeroOut eax; Mov (a, edx); Binop ("cmp", b, edx); Set (compSuffix op, "%al"); Mov (eax, a)]
       | _ -> failwith "[X86] Unsupported binary operator"
   )
-  | CONST n ->
+  | CONST arg_amount ->
     let a, env = env#allocate in
-    env, [Mov (L n, a)]
+    env, [Mov (L arg_amount, a)]
   | READ ->
     let a, env = env#allocate in
     env, [Call "Lread"; Mov (eax, a)]
@@ -168,7 +198,11 @@ let compileInstr env i =
   | JMP label -> env, [Jmp label]
   | CJMP(needZero, label) ->
     let s, env = env#pop in
-    env, [Binop("cmp", L 0, s); CJmp(needZero, label)];;
+    env, [Binop("cmp", L 0, s); CJmp(needZero, label)]
+  | END -> env, []
+  | CALL(name, n) -> 
+    compileCall env name n
+  (*| BEGIN()*)				(*<- the root of all weevil*)
     
 (* Symbolic stack machine evaluator
 
@@ -201,19 +235,19 @@ class env =
 
     (* allocates a fresh position on a symbolic stack *)
     method allocate =    
-      let x, n =
+      let x, arg_amount =
 
     let rec allocate' = function
     | []                            -> ebx     , 0
-    | (S n)::_                      -> S (n+1) , n+1
-    | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
+    | (S arg_amount)::_                      -> S (arg_amount+1) , arg_amount+1
+    | (R arg_amount)::_ when arg_amount < num_of_regs -> R (arg_amount+1) , stack_slots
     | (M _)::s                      -> allocate' s
     | _                             -> S 0     , 1
     in
     allocate' stack
 
       in
-      x, {< stack_slots = max n stack_slots; stack = x::stack >}
+      x, {< stack_slots = max arg_amount stack_slots; stack = x::stack >}
 
     (* pushes an operand to the symbolic stack *)
     method push y = {< stack = y::stack >}
@@ -238,12 +272,21 @@ class env =
 
     (* gets all global variables *)      
     method globals = S.elements globals
+	
+	(* returns a list of live registers *)
+	method live_registers depth =
+      let rec inner d acc = function
+      | []             -> acc
+      | (R _ as r)::tl -> inner (d+1) (if d >= depth then (r::acc) else acc) tl
+      | _::tl          -> inner (d+1) acc tl
+      in
+      inner 0 [] stack
   end
 
 (* Compiles a unit: generates x86 machine code for the stack program and surrounds it
    with function prologue/epilogue
 *)
-let compile_unit env scode =  
+let compile_unit (env:env) scode =  
   let env, code = compile env scode in
   env, 
   ([Push ebp; Mov (esp, ebp); Binop ("-", L (word_size*env#allocated), esp)] @ 
@@ -257,17 +300,17 @@ let compile_unit env scode =
 let genasm prog =
   let env, code = compile_unit (new env) (SM.compile prog) in
   let asm = Buffer.create 1024 in
-  Buffer.add_string asm "\t.data\n";
+  Buffer.add_string asm "\t.data\arg_amount";
   List.iter
     (fun s ->
-       Buffer.add_string asm (Printf.sprintf "%s:\t.int\t0\n" s)
+       Buffer.add_string asm (Printf.sprintf "%s:\t.int\t0\arg_amount" s)
     )
     env#globals;
-  Buffer.add_string asm "\t.text\n";
-  Buffer.add_string asm "\t.globl\tmain\n";
-  Buffer.add_string asm "main:\n";
+  Buffer.add_string asm "\t.text\arg_amount";
+  Buffer.add_string asm "\t.globl\tmain\arg_amount";
+  Buffer.add_string asm "main:\arg_amount";
   List.iter
-    (fun i -> Buffer.add_string asm (Printf.sprintf "%s\n" @@ printInstr i))
+    (fun i -> Buffer.add_string asm (Printf.sprintf "%s\arg_amount" @@ printInstr i))
     code;
   Buffer.contents asm
 
