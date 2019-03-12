@@ -44,9 +44,9 @@ type instr =
 (* a conditional jump                                   *) | CJmp  of string * string
 (* a non-conditional jump                               *) | Jmp   of string
 (* directive                                            *) | Meta  of string
-                                                                            
+                                                               
 (* Instruction printer *)
-let show instr =
+let printInstr instr =
   let binop = function
   | "+"   -> "addl"
   | "-"   -> "subl"
@@ -55,7 +55,7 @@ let show instr =
   | "!!"  -> "orl" 
   | "^"   -> "xorl"
   | "cmp" -> "cmpl"
-  | _     -> failwith "unknown binary operator"
+  | _     -> failwith "[X86] Unknown binary operator"
   in
   let opnd = function
   | R i -> regs.(i)
@@ -79,25 +79,19 @@ let show instr =
   | Jmp    l           -> Printf.sprintf "\tjmp\t%s" l
   | CJmp  (s , l)      -> Printf.sprintf "\tj%s\t%s" s l
   | Meta   s           -> Printf.sprintf "%s\n" s
-
-(* Opening stack machine to use instructions without fully qualified names *)
-open SM
-
-(* Symbolic stack machine evaluator
-
-     compile : env -> prg -> env * instr list
-
-   Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
-   of x86 instructions
-*)
-let compile env code = failwith "Not implemented"
-                                
+    
 (* A set of strings *)           
 module S = Set.Make (String)
 
 (* Environment implementation *)
 let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
-                     
+                    
+let rec printList l = (match l with
+  | [] -> Printf.printf "\n"
+  | [(a, _)] -> Printf.printf "%s\n" a
+  | (a, _)::l -> (Printf.printf "%s, " a; printList l)
+)
+                    
 class env =
   object (self)
     val globals     = S.empty (* a set of global variables         *)
@@ -106,7 +100,15 @@ class env =
     val args        = []      (* function arguments                *)
     val locals      = []      (* function local variables          *)
     val fname       = ""      (* function name                     *)
-                        
+    
+    (*  
+    method dump = (
+      Printf.printf "DUMP %s\n" fname;
+      Printf.printf "stack slots: %d\n" stack_slots;
+      Printf.printf "arguments:   "; printList args;
+      Printf.printf "locals:      "; printList locals
+    )
+    *)  
     (* gets a name for a global variable *)
     method loc x =
       try S (- (List.assoc x args)  -  1)
@@ -116,14 +118,14 @@ class env =
     (* allocates a fresh position on a symbolic stack *)
     method allocate =    
       let x, n =
-	let rec allocate' = function
-	| []                            -> ebx     , 0
-	| (S n)::_                      -> S (n+1) , n+1
-	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-        | (M _)::s                      -> allocate' s
-	| _                             -> S 0     , 1
-	in
-	allocate' stack
+        let rec allocate' = function
+          | []                            -> ebx     , 0
+          | (S n)::_                      -> S (n+1) , n+1
+          | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
+          | (M _)::s                      -> allocate' s
+          | _                             -> S 0     , 1
+        in
+        allocate' stack
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
 
@@ -131,10 +133,14 @@ class env =
     method push y = {< stack = y::stack >}
 
     (* pops one operand from the symbolic stack *)
-    method pop = let x::stack' = stack in x, {< stack = stack' >}
-
+    method pop = match stack with
+      | x::stack' -> x, {< stack = stack' >}
+      | _ -> failwith "[X86] Empty stack."
+      
     (* pops two operands from the symbolic stack *)
-    method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
+    method pop2 = match stack with
+      | x::y::stack' -> x, y, {< stack = stack' >}
+      | _ -> failwith "[X86] Not enough values on the stack."
 
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
@@ -161,6 +167,150 @@ class env =
       
   end
   
+(* Opening stack machine to use instructions without fully qualified names *)
+open SM
+
+(* Single instruction compilation
+
+     compileInstr : env -> prg -> env * instr list
+
+   Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
+   of x86 instructions
+*)
+
+let inRegister x = match x with
+  | R _ -> true
+  | _ -> false
+
+let inMemory x = match x with
+  | S _ | M _ -> true
+  | _ -> false
+
+let movImpl a b = 
+  if (a = b) then []
+  else
+    if (inMemory a) && (inMemory b)
+      then [Mov (a, eax); Mov (eax, b)]
+      else [Mov (a, b)]
+
+let compSuffix op = match op with
+  | "<"  -> "l"
+  | "<=" -> "le"
+  | ">"  -> "g"
+  | ">=" -> "ge"
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | _    -> failwith "[X86] Unsupported comparator"
+  
+let zeroOut reg = Binop("^", reg, reg)
+
+let compileCall env name arg_amount =
+  let rec push env' acc = function
+    | 0 -> env', acc
+    | n -> let x, env' = env'#pop in push env' (Push x :: acc) (n - 1)
+  in
+  let env, push = push env [] arg_amount in
+  let s = List.map (fun x -> Push x) env#live_registers in
+  let r = List.rev (List.map (fun x -> Pop x) env#live_registers) in
+  let an, env = env#allocate in
+  env, s @ push @ [Call name; Mov (eax, an); Binop ("+", L (arg_amount * word_size), esp)] @ r
+   
+let compileInstr (env:env) i =
+  match i with
+  | BINOP op -> (
+    let b, a, env = env#pop2 in
+    match op with
+      | "+" | "-" | "*" ->
+        if inRegister a
+          then env#push a, [Binop(op, b, a)]
+          else (
+            if inRegister b
+              then env#push b, [Binop(op, a, b)]
+              else env#push a, [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)]
+        )
+      | "/" | "%" -> 
+        let result = match op with
+          | "/" -> eax
+          | _ -> edx
+        in
+        env#push a, [Mov(a, eax); Cltd; IDiv b; Mov (result, a)]
+      | "&&" | "!!" ->
+        (*This one could be optimised a bit*)
+        env#push a, [
+          zeroOut eax; zeroOut edx;
+          Binop ("cmp", L 0, a); Set ("nz", "%al");
+          Binop ("cmp", L 0, b); Set ("nz", "%dl");
+          Binop (op, eax, edx); Mov (edx, a)
+        ]
+      | "<" | "<=" | ">" | ">=" | "==" | "!=" ->
+        env#push a,
+        if inRegister a
+          then [zeroOut eax; Binop ("cmp", b, a); Set(compSuffix op, "%al"); Mov (eax, a)] 
+          else [zeroOut eax; Mov (a, edx); Binop ("cmp", b, edx); Set (compSuffix op, "%al"); Mov (eax, a)]
+      | _ -> failwith "[X86] Unsupported binary operator"
+  )
+  | CONST n ->
+    let a, env = env#allocate in
+    env, [Mov (L n, a)]
+  | READ ->
+    let a, env = env#allocate in
+    env, [Call "Lread"; Mov (eax, a)]
+  | WRITE ->
+    let a, env = env#pop in
+    env, [Push a; Call "Lwrite"; Pop eax]
+  | LD v ->
+    let s, env = (env#global v)#allocate in
+    env, movImpl (env#loc v) s
+  | ST v ->
+    let s, env = (env#global v)#pop in
+    env, movImpl s (env#loc v)
+  | LABEL label -> env, [Label label]
+  | JMP label -> env, [Jmp label]
+  | CJMP(needZero, label) ->
+    let s, env = env#pop in
+    env, [Binop("cmp", L 0, s); CJmp(needZero, label)]
+  | END ->
+    env,
+    [
+      Label env#epilogue; Mov (ebp, esp); Pop ebp; Ret;
+      Meta (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size))
+    ]
+  | RET false -> env, [Jmp env#epilogue]
+  | RET true  ->
+    let retval, prev_env = env#pop in
+    prev_env, [Mov (retval, eax); Jmp env#epilogue]
+  | CALL(name, arg_amount, _) -> 
+    (*compileCall env name n*)
+    let rec push env' acc = function
+      | 0 -> env', acc
+      | n -> let x, env' = env'#pop in push env' (Push x :: acc) (n - 1)
+    in
+    let env, push = push env [] arg_amount in
+    let s = List.map (fun x -> Push x) env#live_registers in
+    let r = List.rev (List.map (fun x -> Pop x) env#live_registers) in
+    let an, env = env#allocate in
+    env, s @ push @ [Call name; Mov (eax, an); Binop ("+", L (arg_amount * word_size), esp)] @ r
+  | BEGIN(f, args, locs)  ->
+    let env = env#enter f args locs in
+    env, [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ env#lsize), esp)]
+  (*| _ -> failwith (Printf.sprintf "[X86] Unimplemented instruction: %s" (GT.transform(insn) new @insn[show] () i))*)
+    
+(* Symbolic stack machine evaluator
+
+     compile : env -> prg -> env * instr list
+
+   Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
+   of x86 instructions
+*)
+
+let rec compile env p =
+  match p with
+    | [] -> env, []
+    | i::p ->
+        let env, x86p1 = compileInstr env i in
+        let env, x86p2 = compile env p in
+        env, x86p1 @ x86p2
+  
 (* Generates an assembler text for a program: first compiles the program into
    the stack code, then generates x86 assember code, then prints the assembler file
 *)
@@ -174,7 +324,7 @@ let genasm (ds, stmt) =
   let data = Meta "\t.data" :: (List.map (fun s -> Meta (s ^ ":\t.int\t0")) env#globals) in 
   let asm = Buffer.create 1024 in
   List.iter
-    (fun i -> Buffer.add_string asm (Printf.sprintf "%s\n" @@ show i))
+    (fun i -> Buffer.add_string asm (Printf.sprintf "%s\n" @@ printInstr i))
     (data @ [Meta "\t.text"; Meta "\t.globl\tmain"] @ code);
   Buffer.contents asm
 
@@ -185,4 +335,3 @@ let build prog name =
   close_out outf;
   let inc = try Sys.getenv "RC_RUNTIME" with _ -> "../runtime" in
   Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
- 

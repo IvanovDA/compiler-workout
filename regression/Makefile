@@ -1,5 +1,7 @@
 TESTS=$(basename $(wildcard test*.expr))
 
+SHELL := /bin/bash
+
 RC=../src/rc.opt
 
 .PHONY: check $(TESTS) 
