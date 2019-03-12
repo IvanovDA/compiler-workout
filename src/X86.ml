@@ -91,7 +91,7 @@ let rec printList l = (match l with
   | [(a, _)] -> Printf.printf "%s\n" a
   | (a, _)::l -> (Printf.printf "%s, " a; printList l)
 )
-					
+                    
 class env =
   object (self)
     val globals     = S.empty (* a set of global variables         *)
@@ -101,31 +101,31 @@ class env =
     val locals      = []      (* function local variables          *)
     val fname       = ""      (* function name                     *)
     
-	(*	
+    (*  
     method dump = (
-	  Printf.printf "DUMP %s\n" fname;
-	  Printf.printf "stack slots: %d\n" stack_slots;
-	  Printf.printf "arguments:   "; printList args;
-	  Printf.printf "locals:      "; printList locals
-	)
-	*)	
+      Printf.printf "DUMP %s\n" fname;
+      Printf.printf "stack slots: %d\n" stack_slots;
+      Printf.printf "arguments:   "; printList args;
+      Printf.printf "locals:      "; printList locals
+    )
+    *)  
     (* gets a name for a global variable *)
     method loc x =
-	  try S (- (List.assoc x args)  -  1)
+      try S (- (List.assoc x args)  -  1)
       with Not_found ->  
         try S (List.assoc x locals) with Not_found -> M ("global_" ^ x)
         
     (* allocates a fresh position on a symbolic stack *)
     method allocate =    
       let x, n =
-		let rec allocate' = function
-		  | []                            -> ebx     , 0
-		  | (S n)::_                      -> S (n+1) , n+1
-	  	  | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-		  | (M _)::s                      -> allocate' s
-		  | _                             -> S 0     , 1
-		in
-	    allocate' stack
+        let rec allocate' = function
+          | []                            -> ebx     , 0
+          | (S n)::_                      -> S (n+1) , n+1
+          | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
+          | (M _)::s                      -> allocate' s
+          | _                             -> S 0     , 1
+        in
+        allocate' stack
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
 
@@ -134,13 +134,13 @@ class env =
 
     (* pops one operand from the symbolic stack *)
     method pop = match stack with
-	  | x::stack' -> x, {< stack = stack' >}
-	  | _ -> failwith "[X86] Empty stack."
-	  
+      | x::stack' -> x, {< stack = stack' >}
+      | _ -> failwith "[X86] Empty stack."
+      
     (* pops two operands from the symbolic stack *)
     method pop2 = match stack with
-	  | x::y::stack' -> x, y, {< stack = stack' >}
-	  | _ -> failwith "[X86] Not enough values on the stack."
+      | x::y::stack' -> x, y, {< stack = stack' >}
+      | _ -> failwith "[X86] Not enough values on the stack."
 
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
@@ -207,7 +207,7 @@ let zeroOut reg = Binop("^", reg, reg)
 let compileCall env name arg_amount =
   let rec push env' acc = function
     | 0 -> env', acc
-	| n -> let x, env' = env'#pop in push env' (Push x :: acc) (n - 1)
+    | n -> let x, env' = env'#pop in push env' (Push x :: acc) (n - 1)
   in
   let env, push = push env [] arg_amount in
   let s = List.map (fun x -> Push x) env#live_registers in
@@ -271,25 +271,25 @@ let compileInstr (env:env) i =
     env, [Binop("cmp", L 0, s); CJmp(needZero, label)]
   | END ->
     env,
-	[
-	  Label env#epilogue; Mov (ebp, esp); Pop ebp; Ret;
-	  Meta (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size))
-	]
+    [
+      Label env#epilogue; Mov (ebp, esp); Pop ebp; Ret;
+      Meta (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size))
+    ]
   | RET false -> env, [Jmp env#epilogue]
   | RET true  ->
     let retval, prev_env = env#pop in
-	prev_env, [Mov (retval, eax); Jmp env#epilogue]
+    prev_env, [Mov (retval, eax); Jmp env#epilogue]
   | CALL(name, arg_amount, _) -> 
     (*compileCall env name n*)
-	let rec push env' acc = function
+    let rec push env' acc = function
       | 0 -> env', acc
-	  | n -> let x, env' = env'#pop in push env' (Push x :: acc) (n - 1)
-	in
-  	let env, push = push env [] arg_amount in
-	let s = List.map (fun x -> Push x) env#live_registers in
-	let r = List.rev (List.map (fun x -> Pop x) env#live_registers) in
-	let an, env = env#allocate in
-	env, s @ push @ [Call name; Mov (eax, an); Binop ("+", L (arg_amount * word_size), esp)] @ r
+      | n -> let x, env' = env'#pop in push env' (Push x :: acc) (n - 1)
+    in
+    let env, push = push env [] arg_amount in
+    let s = List.map (fun x -> Push x) env#live_registers in
+    let r = List.rev (List.map (fun x -> Pop x) env#live_registers) in
+    let an, env = env#allocate in
+    env, s @ push @ [Call name; Mov (eax, an); Binop ("+", L (arg_amount * word_size), esp)] @ r
   | BEGIN(f, args, locs)  ->
     let env = env#enter f args locs in
     env, [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ env#lsize), esp)]

@@ -56,7 +56,7 @@ let rec eval env (conf:config) p =
           | _ -> failwith "[SM] Empty stack on WRITE instruction"
       )
       | LD v -> eval env (cst, [State.eval s v] @ stack, (s, i, o)) p
-	  | ST v -> (
+      | ST v -> (
         match stack with
           | n::stack -> eval env (cst, stack, ((Language.State.update v n s), i, o)) p
           | _ -> failwith "[SM] Empty stack on ST instruction"
@@ -71,21 +71,21 @@ let rec eval env (conf:config) p =
               then eval env conf (env#labeled label)
               else eval env conf p
       )
-	  | BEGIN(name, args, locs) ->
-		let rec setArgs args stack s = match (args, stack) with
-		  | ([], _) -> stack, s
-		  | (arg::args, n::stack) ->
-		    setArgs args stack (Language.State.update arg n s)
-	      | _ -> failwith "[SM] Not enough arguments for a procedure call."
-	    in
-		let stack, s = setArgs args stack (State.enter s (args @ locs)) in
-		eval env (cst, stack, (s, i, o)) p
-	  | END | RET _ -> (
-	    match cst with
-		  | [] -> conf
-		  | (p, old_scope)::cst -> eval env (cst, stack, (State.leave s old_scope, i, o)) p
-	  )
-	  | CALL(name, _, _) -> eval env ((p, s)::cst, stack, (s, i, o)) (env#labeled name)
+      | BEGIN(name, args, locs) ->
+        let rec setArgs args stack s = match (args, stack) with
+          | ([], _) -> stack, s
+          | (arg::args, n::stack) ->
+            setArgs args stack (Language.State.update arg n s)
+          | _ -> failwith "[SM] Not enough arguments for a procedure call."
+        in
+        let stack, s = setArgs args stack (State.enter s (args @ locs)) in
+        eval env (cst, stack, (s, i, o)) p
+      | END | RET _ -> (
+        match cst with
+          | [] -> conf
+          | (p, old_scope)::cst -> eval env (cst, stack, (State.leave s old_scope, i, o)) p
+      )
+      | CALL(name, _, _) -> eval env ((p, s)::cst, stack, (s, i, o)) (env#labeled name)
       | _ -> failwith (Printf.sprintf "[SM] Unsupported instruction %s" (GT.transform(insn) new @insn[show] () instr))
 
 (* Top-level evaluation
@@ -159,8 +159,8 @@ and compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p with
     labels,
     [LABEL(bodyLabel)] @ codeBody @ compileExpr cond @ [CJMP("z", bodyLabel)]
   | Language.Stmt.Call(name, argvals) ->
-	let n = List.length argvals in
-	labels, compileArgs argvals @ [CALL(name, n, false)]
+    let n = List.length argvals in
+    labels, compileArgs argvals @ [CALL(name, n, false)]
   | Language.Stmt.Return(None)        -> labels, [RET false]
   | Language.Stmt.Return(Some e)      -> labels, compileExpr e @ [RET true]
   
@@ -168,9 +168,9 @@ let rec compileFuns labels funs = match funs with
   | [] -> labels, []
   | f::funs ->
     let (name, (args, locs, body)) = f in
-	let labels, code = compileImpl labels body in
-	let labels, rest = compileFuns labels funs in
-	labels, [LABEL name; BEGIN(name, args, locs)] @ code @ [END] @ rest
+    let labels, code = compileImpl labels body in
+    let labels, rest = compileFuns labels funs in
+    labels, [LABEL name; BEGIN(name, args, locs)] @ code @ [END] @ rest
   
 (* Stack machine compiler
 
