@@ -34,8 +34,18 @@ type config = (prg * State.t) list * int list * Expr.config
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                         
 
+let logf = open_out (Printf.sprintf "sm_trace.log")
+let rec dumpStack s = match s with
+  | [] -> ()
+  | x::s -> dumpStack s; Printf.fprintf logf "%d " x
+
 let rec eval env (conf:config) p =
   let cst, stack, (s, i, o, r) = conf in
+  (*dumpStack stack;
+  (match p with
+    | [] -> ()
+    | instr::p -> Printf.fprintf logf "\t\t\t%s\n" (GT.transform(insn) new @insn[show] () instr)
+  );*)
   match p with
     | [] -> conf
     | instr::p -> match instr with
@@ -68,8 +78,8 @@ let rec eval env (conf:config) p =
           | [] -> failwith "[SM] CJMP without a value to evaluate"
           | n::stack ->
             if((n = 0) = (needZero = "z"))
-              then eval env conf (env#labeled label)
-              else eval env conf p
+              then eval env (cst, stack, (s, i, o, r)) (env#labeled label)
+              else eval env (cst, stack, (s, i, o, r)) p
       )
       | BEGIN(name, args, locs) ->
         let rec setArgs args stack s = match (args, stack) with
@@ -95,12 +105,15 @@ let rec eval env (conf:config) p =
    Takes a program, an input stream, and returns an output stream this program calculates
 *)
 
+let codelogf = open_out (Printf.sprintf "sm_code.log")
+
 let rec debugPrint p = match p with
-  | i::p -> Printf.printf "%s\n" (GT.transform(insn) new @insn[show] () i); debugPrint p
+  | i::p -> Printf.fprintf codelogf "%s\n" (GT.transform(insn) new @insn[show] () i); debugPrint p
   | _ -> ()
 
 let run p i =
-(*  debugPrint p; *)
+  (*debugPrint p;
+  close_out codelogf;*)
   let module M = Map.Make (String) in
   let rec make_map m = function
   | []              -> m
@@ -109,7 +122,7 @@ let run p i =
   in
   let m = make_map M.empty p in
   let (_, _, (_, _, o, _)) = eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [], None)) p in o
-
+  
 (* Storage/generator for labels
      Stores last label indices for if, while, repeat, in that order
 *)
@@ -125,9 +138,11 @@ let rec compileExpr t =
   | Language.Expr.Binop(op, a, b)  -> compileExpr a @ compileExpr b @ [BINOP op]
   | Language.Expr.Call(name, args) -> compileArgs args @ [CALL(name, List.length args, true)]
 
-and compileArgs args = match args with
+and compileArgs args =
+  let rec impl args = match args with
   | [] -> []
   | (arg::args) -> compileExpr arg @ compileArgs args
+  in impl (List.rev args)
 
 and compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p with
   | Language.Stmt.Read v             -> labels, [READ; ST v]
@@ -159,7 +174,7 @@ and compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p with
     labels,
     [LABEL(bodyLabel)] @ codeBody @ compileExpr cond @ [CJMP("z", bodyLabel)]
   | Language.Stmt.Call(name, argvals) ->
-    let n = List.length argvals in
+    let n = List.length argvals in 
     labels, compileArgs argvals @ [CALL(name, n, false)]
   | Language.Stmt.Return(None)        -> labels, [RET false]
   | Language.Stmt.Return(Some e)      -> labels, compileExpr e @ [RET true]

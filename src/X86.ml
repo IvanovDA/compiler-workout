@@ -203,17 +203,6 @@ let compSuffix op = match op with
   | _    -> failwith "[X86] Unsupported comparator"
   
 let zeroOut reg = Binop("^", reg, reg)
-
-let compileCall env name arg_amount =
-  let rec push env' acc = function
-    | 0 -> env', acc
-    | n -> let x, env' = env'#pop in push env' (Push x :: acc) (n - 1)
-  in
-  let env, push = push env [] arg_amount in
-  let s = List.map (fun x -> Push x) env#live_registers in
-  let r = List.rev (List.map (fun x -> Pop x) env#live_registers) in
-  let an, env = env#allocate in
-  env, s @ push @ [Call name; Mov (eax, an); Binop ("+", L (arg_amount * word_size), esp)] @ r
    
 let compileInstr (env:env) i =
   match i with
@@ -280,7 +269,6 @@ let compileInstr (env:env) i =
     let retval, prev_env = env#pop in
     prev_env, [Mov (retval, eax); Jmp env#epilogue]
   | CALL(name, arg_amount, _) -> 
-    (*compileCall env name n*)
     let rec push env' acc = function
       | 0 -> env', acc
       | n -> let x, env' = env'#pop in push env' (Push x :: acc) (n - 1)

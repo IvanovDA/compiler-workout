@@ -34,7 +34,7 @@ module State =
 
     (* Drops a scope *)
     let leave st st' = {st' with g = st.g}
-
+	
   end
 
 (* Simple expressions: syntax and semantics *)
@@ -153,9 +153,15 @@ module Expr =
           |] 
         )
         primary);
-      
+
+      arglist:
+          v:!(parse) "," rest:!(arglist) {[v] @ rest} 
+        | v:!(parse) {[v]}
+        | empty {[]};
+		
       primary:
         n:DECIMAL {Const n}
+	  | name:IDENT "(" arglist:!(arglist) ")" {Call(name, arglist)}
       | x:IDENT   {Var x}
       | -"(" parse -")"
     )
@@ -193,6 +199,8 @@ module Stmt =
        which returns a list of formal parameters and a body for given definition
     *)
 
+	let log = open_out (Printf.sprintf "lang.log")
+	
     let rec eval env ((s, i, o, r) as conf) k (stmt:t) =
       if (stmt = Skip)
         then (
@@ -204,34 +212,36 @@ module Stmt =
           | Read v ->
             (
               match i with
-                | n::i -> (State.update v n s), i, o, None
+                | n::i -> eval env ((State.update v n s), i, o, None) Skip k
                 | _ -> failwith "[Stmt] No input for Read statement"
             )
           | Write x ->
             let ((s, i, o, r), n) = Expr.ensureRetval env conf x in 
-            s, i, o @ [n], None
+            eval env (s, i, o @ [n], None) Skip k
           | Assign(v, x) ->
             let ((s, i, o, r), n) = Expr.ensureRetval env conf x in
-            (State.update v n s), i, o, None
-          | Seq(t1, t2) -> 
-            let conf = eval env conf k t1 in
-            eval env conf k t2
+            eval env ((State.update v n s), i, o, None) Skip k
+          | Seq(t, Skip) | Seq(Skip, t) ->
+		    eval env conf k t
+		  | Seq(t1, t2) -> 
+            eval env conf (Seq(t2, k)) t1
           | If(cond, p1, p2) -> 
             let (conf, condVal) = Expr.ensureRetval env conf cond in
             if (condVal != 0) then eval env conf k p1 else eval env conf k p2
           | While(cond, body)  ->
             let (conf, condVal) = Expr.ensureRetval env conf cond in
-            eval env conf k (if (condVal != 0) then Seq(body, While(cond, body)) else Skip)
+			if (condVal != 0)
+			  then eval env conf k (Seq(body, While(cond, body)))
+			  else eval env conf Skip k
           | Repeat(body, cond) ->
-            let conf = eval env conf k body in
+            let conf = eval env conf Skip body in
             let (conf, condVal) = Expr.ensureRetval env conf cond in
             eval env conf k (if (condVal = 0) then Repeat(body, cond) else Skip)
           | Call(name, args_provided) ->
             let conf = Expr.eval env conf (Expr.Call(name, args_provided)) in
             eval env conf k Skip
           | Return(Some t) ->
-            let (conf, _) = Expr.ensureRetval env conf t in
-            conf
+            let (conf, _) = Expr.ensureRetval env conf t in conf
           | Return(None) -> conf
           | _ -> failwith "[Stmt] Unsupported statement"
           
@@ -242,20 +252,18 @@ module Stmt =
           "fi" {Skip}
         | "else" body:!(parse) "fi" {body}
         | "elif" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)};
-      arglist:
-          v:!(Expr.parse) "," rest:!(arglist) {[v] @ rest} 
-        | v:!(Expr.parse) {[v]}
-        | empty {[]};
       stmt:
           v:IDENT ":=" e:!(Expr.parse) {Assign(v, e)}
-        | name:IDENT "(" arglist:!(arglist) ")" {Call(name, arglist)}
+        | name:IDENT "(" arglist:!(Expr.arglist) ")" {Call(name, arglist)}
         | "read" "(" x:IDENT ")" {Read x}
         | "write" "(" e:!(Expr.parse) ")" {Write e}
         | "if" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)}
         | "while" cond:!(Expr.parse) "do" body:!(parse) "od" {While(cond, body)}
         | "for" init:!(stmt) "," cond:!(Expr.parse) "," step:!(stmt) "do" body:!(parse) "od" {Seq(init, While(cond, Seq(body, step)))}
         | "repeat" body:!(parse) "until" cond:!(Expr.parse) {Repeat(body, cond)}
-        | "skip" {Skip};
+        | "skip" {Skip}
+		| "return" retval:!(Expr.parse) {Return(Some retval)}
+		| "return" {Return(None)};
             
       parse: s:stmt ";" rest:parse {Seq(s, rest)} | stmt
     )
