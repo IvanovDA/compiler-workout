@@ -116,7 +116,6 @@ let run p i =
        method labeled l = M.find l m
        method builtin (conf:config) f n =
 	     let (cstack, stack, (st, i, o, r)) = conf in
-         let f = match f.[0] with 'L' -> String.sub f 1 (String.length f - 1) | _ -> f in
          let args, stack' = split n stack in
          let (st, i, o, r) = Language.Builtin.eval (st, i, o, Language.Value.Void) (List.rev (List.map (fun x -> Language.Value.Int x) args)) f in
          let stack'' = match r with

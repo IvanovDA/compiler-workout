@@ -56,8 +56,8 @@ module State =
 module Builtin =
   struct
     let eval (st, i, o, _) args name = match name with
-      | "read"     -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
-      | "write"    -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
+      | "Lread"     -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
+      | "Lwrite"    -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
 	  | _          -> failwith (Printf.sprintf "%s() is not a built-in function." name)
       (*
 	  | "$elem"    -> let [b; j] = args in
@@ -193,7 +193,7 @@ module Expr =
 		
       primary:
         n:DECIMAL {Const (Value.Int n)}
-	  | name:IDENT "(" arglist:!(arglist) ")" {Call(name, arglist)}
+	  | name:IDENT "(" arglist:!(arglist) ")" {Call("L" ^ name, arglist)}
       | x:IDENT   {Var x}
       | -"(" parse -")"
     )
@@ -229,8 +229,6 @@ module Stmt =
        which returns a list of formal parameters and a body for given definition
     *)
 
-	let log = open_out "lang.log"
-	
 	let retValInt conf = let (_, _, _, r) = conf in Value.to_int r
 	
     let rec eval env (conf:Expr.config) k (stmt:t) =
@@ -277,7 +275,7 @@ module Stmt =
         | "elif" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)};
       stmt:
           v:IDENT ":=" e:!(Expr.parse) {Assign(v, e)}
-        | name:IDENT "(" arglist:!(Expr.arglist) ")" {Call(name, arglist)}
+        | name:IDENT "(" arglist:!(Expr.arglist) ")" {Call("L" ^ name, arglist)}
         | "if" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)}
         | "while" cond:!(Expr.parse) "do" body:!(parse) "od" {While(cond, body)}
         | "for" init:!(stmt) "," cond:!(Expr.parse) "," step:!(stmt) "do" body:!(parse) "od" {Seq(init, While(cond, Seq(body, step)))}
@@ -305,7 +303,7 @@ module Definition =
       locals:
           "local" varlist:!(varlist) {varlist}
         | empty {[]};
-      parse: "fun" name:IDENT "(" args:!(varlist) ")" locs:!(locals) "{" body:!(Stmt.parse) "}"{(name, (args, locs, body))}
+      parse: "fun" name:IDENT "(" args:!(varlist) ")" locs:!(locals) "{" body:!(Stmt.parse) "}"{(("L" ^ name), (args, locs, body))}
     )
 
   end
