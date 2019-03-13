@@ -6,19 +6,37 @@ open GT
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
 open Combinators
-            
+          
 module Value =
   struct
     @type t =
-	  | Int of int
-	  | Void with show
-	  
-	let to_int = function
-	  | Int n -> n
-	  | _ -> failwith "Int value expected"
-	  
+      | Int of int
+      | String of bytes
+      | Array of t array
+      | Void
+      
+    let to_int = function
+      | Int n -> n
+      | String s -> failwith (Printf.sprintf "Wanted an int, got %s" (Bytes.to_string s))
+      (*| _ -> failwith "Int value expected"*)
+      
+    let to_string = function 
+      | String s -> Bytes.to_string s 
+      | _ -> failwith "String value expected"
+
+    let to_array = function
+      | Array a -> a
+      | _       -> failwith "Array value expected"
+      
+    let of_int    n = Int    n
+    let of_string s = String s
+    let of_array  a = Array  a
+      
+    let update_string s i x = Bytes.set s i x; s 
+    let update_array  a i x = a.(i) <- x; a
+      
   end
-			
+            
 (* States *)
 module State =
   struct
@@ -35,9 +53,9 @@ module State =
        to value v and returns the new state w.r.t. a scope
     *)
     let update x v s =
-	  match v with
-	  | Value.Void -> failwith "Assignment to void!"
-	  | Value.Int n ->
+      match v with
+      | Value.Void -> failwith "Assignment to void!"
+      | _ ->
         let u x v s = fun y -> if x = y then v else s y in
         if List.mem x s.scope then {s with l = u x v s.l} else {s with g = u x v s.g}
 
@@ -49,7 +67,7 @@ module State =
 
     (* Drops a scope *)
     let leave st st' = {st' with g = st.g}
-	
+    
   end
   
 (* Builtins *)
@@ -58,20 +76,19 @@ module Builtin =
     let eval (st, i, o, _) args name = match name with
       | "Lread"     -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
       | "Lwrite"    -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
-	  | _          -> failwith (Printf.sprintf "%s() is not a built-in function." name)
-      (*
-	  | "$elem"    -> let [b; j] = args in
-                    (st, i, o, let i = Value.to_int j in
-                               Some (match b with
-                                     | Value.String s -> Value.of_int @@ Char.code s.[i]
-                                     | Value.Array  a -> List.nth a i
-                               )
-                    )         
-      | "$length"  -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Array a -> List.length a | Value.String s -> String.length s)))
-      | "$array"   -> (st, i, o, Some (Value.of_array args))
-      | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
-      | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))                     
-      *)
+      | "Lfirst"    -> (match args with a::b::[] -> (st, i, o, a))
+      | ".elem"     ->
+        let [b; j] = args in
+        (st, i, o, let i = Value.to_int j in
+        (match b with
+          | Value.String s -> Value.of_int @@ Char.code (Bytes.get s i)
+          | Value.Array  a -> a.(i)
+        ))         
+      | ".length"  -> (st, i, o, Value.of_int (match List.hd args with Value.Array a -> Array.length a | Value.String s -> Bytes.length s))
+      | ".array"   -> (st, i, o, Value.of_array @@ Array.of_list args)
+      | "LisArray"  -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
+      | "LisString" -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
+      | _          -> failwith (Printf.sprintf "%s() is not a (built-in) function." name)
   end
 
 (* Simple expressions: syntax and semantics *)
@@ -82,10 +99,11 @@ module Expr =
        notation, it came from GT. 
     *)
     @type t =
-    (* integer constant *) | Const of Value.t
-    (* variable         *) | Var   of string
-    (* binary operator  *) | Binop of string * t * t 
-    (* function call    *) | Call  of string * t list with show
+    (* integer constant *) | Const  of Value.t
+    (* arbitrary array  *) | Array  of t list
+    (* variable         *) | Var    of string
+    (* binary operator  *) | Binop  of string * t * t 
+    (* function call    *) | Call   of string * t list
     
     (* Available binary operators:
         !!                   --- disjunction
@@ -121,8 +139,8 @@ module Expr =
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
 
     let evalBinop op a b = match a, b with
-	  | Value.Int a, Value.Int b -> Value.Int (to_func op a b)
-	  | _ -> failwith "NIY: Binops on non-int values"
+      | Value.Int a, Value.Int b -> Value.Int (to_func op a b)
+      | _ -> failwith "NIY: Binops on non-int values"
     
     (* Expression evaluator
 
@@ -138,8 +156,18 @@ module Expr =
        and returns the resulting configuration.
     *)
     
-    let rec eval env (conf:config) (expr:t) = 
-	  let (s, i, o, r) = conf in
+    let rec evalArgs env conf args = match args with
+      | [] -> conf, []
+      | arg::args -> (
+        let (s, i, o, r) = eval env conf arg in
+        match r with
+          | Value.Void -> failwith "[Expr] An argument provided to a function is void." (* Sanity check *)
+          | _ ->
+            let conf, argvals = evalArgs env (s, i, o, r) args in
+            conf, r::argvals
+          )
+    and eval env (conf:config) (expr:t) = 
+      let (s, i, o, r) = conf in
       match expr with
       | Const n          -> (s, i, o, n)
       | Var   x          -> (s, i, o, (State.eval s x))
@@ -148,19 +176,11 @@ module Expr =
         let (s, i, o, r2) = eval env (s, i, o, r1) y in
         (s, i, o, (evalBinop op r1 r2))
       | Call(name, args) ->
-        let rec evalArgs conf args = match args with
-          | [] -> conf, []
-          | arg::args -> (
-            let (s, i, o, r) = eval env conf arg in
-            match r with
-              | Value.Void -> failwith "[Expr] An argument provided to a function is void." (* Sanity check *)
-              | _ ->
-                let conf, argvals = evalArgs (s, i, o, r) args in
-                conf, r::argvals
-          )
-        in
-        let (conf, argvals) = evalArgs conf args in
+        let (conf, argvals) = evalArgs env conf args in
         env#definition env name argvals conf
+      | Array(vals) ->
+        let (s, i, o, _), vals = evalArgs env conf vals in
+        (s, i, o, Value.Array (Array.of_list vals))
         
     (* Expression parser. You can use the following terminals:
 
@@ -168,6 +188,14 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string
                                                                                                                   
     *)
+
+    let lvalueToRvalue (x, ids) =
+      let rec inner x ids = 
+        match ids with
+          | [] -> x
+          | id::ids -> inner (Call(".elem", [x; id])) ids
+      in inner (Var x) ids
+      
     ostap (                                      
       parse:
       !(Ostap.Util.expr 
@@ -186,15 +214,26 @@ module Expr =
         )
         primary);
 
-      arglist:
-          v:!(parse) "," rest:!(arglist) {[v] @ rest} 
-        | v:!(parse) {[v]}
-        | empty {[]};
-		
+      exprlist:
+        v:!(parse) "," rest:!(exprlist) {[v] @ rest} 
+      | v:!(parse) {[v]}
+      | empty {[]};
+        
+      acclist:
+        "[" id:!(primary) "]" rest:!(acclist) {[id] @ rest}
+      | empty {[]};
+        
+      lvalue:
+        x:IDENT ids:!(acclist) {(x, ids)};
+      
       primary:
         n:DECIMAL {Const (Value.Int n)}
-	  | name:IDENT "(" arglist:!(arglist) ")" {Call("L" ^ name, arglist)}
-      | x:IDENT   {Var x}
+      | c:CHAR {Const (Value.Int (Char.code c))}
+      | s:STRING {Const (Value.String (Bytes.of_string (String.sub s 1 (String.length s - 2))))}
+      | "[" exprlist:!(exprlist) "]" {Array exprlist}
+      | name:IDENT "(" arglist:!(exprlist) ")" {Call("L" ^ name, arglist)}
+      | v:!(lvalue) ".length" {Call(".length", [lvalueToRvalue v])}
+      | x:!(lvalue) {lvalueToRvalue x}
       | -"(" parse -")"
     )
   end
@@ -205,14 +244,14 @@ module Stmt =
 
     (* The type for statements *)
     @type t =
-    (* assignment                       *) | Assign of string * Expr.t
+    (* assignment                       *) | Assign of string * Expr.t list * Expr.t
     (* composition                      *) | Seq    of t * t 
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
     (* loop with a post-condition       *) | Repeat of t * Expr.t
     (* call a procedure                 *) | Call   of string * Expr.t list
-    (* return statement                 *) | Return of Expr.t option with show
+    (* return statement                 *) | Return of Expr.t option
 
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = State.t * int list * int list 
@@ -229,8 +268,20 @@ module Stmt =
        which returns a list of formal parameters and a body for given definition
     *)
 
-	let retValInt conf = let (_, _, _, r) = conf in Value.to_int r
-	
+    let retValInt conf = let (_, _, _, r) = conf in Value.to_int r
+    
+    let update st x v is =
+      let rec update a v = function
+      | []    -> v           
+      | i::tl ->
+          let i = Value.to_int i in 
+          (match a with
+            | Value.String s when tl = [] -> Value.String (Value.update_string s i (Char.chr @@ Value.to_int v))
+            | Value.Array a               -> Value.Array (Value.update_array  a i (update a.(i) v tl))
+          ) 
+      in
+      State.update x (match is with | [] -> v | _ -> update (State.eval st x) v is) st
+      
     let rec eval env (conf:Expr.config) k (stmt:t) =
       if (stmt = Skip)
         then (
@@ -239,25 +290,27 @@ module Stmt =
             else eval env conf Skip k
         )
         else
-		match stmt with
-          | Assign(v, x) ->
+        match stmt with
+          | Assign(v, args, x) ->
+            let conf, argvals = Expr.evalArgs env conf args in
             let (s, i, o, r) = Expr.eval env conf x in
-            eval env ((State.update v r s), i, o, Value.Void) Skip k
+            let s = update s v r argvals in
+            eval env (s, i, o, r) Skip k
           | Seq(t, Skip) | Seq(Skip, t) ->
-		    eval env conf k t
-		  | Seq(t1, t2) -> 
+            eval env conf k t
+          | Seq(t1, t2) -> 
             eval env conf (Seq(t2, k)) t1
           | If(cond, p1, p2) -> 
             let conf = Expr.eval env conf cond in
             if ((retValInt conf) != 0) then eval env conf k p1 else eval env conf k p2
           | While(cond, body)  ->
             let conf = Expr.eval env conf cond in
-			if ((retValInt conf) != 0)
-			  then eval env conf k (Seq(body, While(cond, body)))
-			  else eval env conf Skip k
+            if ((retValInt conf) != 0)
+              then eval env conf k (Seq(body, While(cond, body)))
+              else eval env conf Skip k
           | Repeat(body, cond) ->
             let conf = eval env conf Skip body in
-			let conf = Expr.eval env conf cond in
+            let conf = Expr.eval env conf cond in
             eval env conf k (if ((retValInt conf) = 0) then Repeat(body, cond) else Skip)
           | Call(name, args_provided) ->
             let conf = Expr.eval env conf (Expr.Call(name, args_provided)) in
@@ -274,15 +327,15 @@ module Stmt =
         | "else" body:!(parse) "fi" {body}
         | "elif" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)};
       stmt:
-          v:IDENT ":=" e:!(Expr.parse) {Assign(v, e)}
-        | name:IDENT "(" arglist:!(Expr.arglist) ")" {Call("L" ^ name, arglist)}
+          v:!(Expr.lvalue) ":=" e:!(Expr.parse) {let (x, ids) = v in Assign(x, ids, e)}
+        | name:IDENT "(" arglist:!(Expr.exprlist) ")" {Call("L" ^ name, arglist)}
         | "if" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)}
         | "while" cond:!(Expr.parse) "do" body:!(parse) "od" {While(cond, body)}
         | "for" init:!(stmt) "," cond:!(Expr.parse) "," step:!(stmt) "do" body:!(parse) "od" {Seq(init, While(cond, Seq(body, step)))}
         | "repeat" body:!(parse) "until" cond:!(Expr.parse) {Repeat(body, cond)}
         | "skip" {Skip}
-		| "return" retval:!(Expr.parse) {Return(Some retval)}
-		| "return" {Return(None)};
+        | "return" retval:!(Expr.parse) {Return(Some retval)}
+        | "return" {Return(None)};
             
       parse: s:stmt ";" rest:parse {Seq(s, rest)} | stmt
     )
@@ -326,12 +379,12 @@ let eval (defs, body) i =
     Stmt.eval
       (object
          method definition env f (args:Value.t list) (st, i, o, r) =
-		   try
+           try
              let xs, locs, s      = snd @@ M.find f m in
              let st'              = List.fold_left (fun st (x, a) -> State.update x a st) (State.enter st (xs @ locs)) (List.combine xs args) in
              let st'', i', o', r' = Stmt.eval env (st', i, o, r) Stmt.Skip s in
              (State.leave st'' st, i', o', r')
-		   with Not_found -> Builtin.eval (st, i, o, r) args f
+           with Not_found -> Builtin.eval (st, i, o, r) args f
        end)
       (State.empty, i, [], Value.Void)
       Stmt.Skip

@@ -170,6 +170,9 @@ class env =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+(* Opening language to use values *)
+open Language
+
 (* Single instruction compilation
 
      compileInstr : env -> prg -> env * instr list
