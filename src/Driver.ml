@@ -19,7 +19,7 @@ let parse infile =
     (ostap (!(Language.parse) -EOF))
 
 let main =
-  (*try*)
+  try
     let interpret  = Sys.argv.(1) = "-i"  in
     let stack      = Sys.argv.(1) = "-s"  in
     let to_compile = not (interpret || stack) in
@@ -46,5 +46,5 @@ let main =
 	in
 	List.iter (fun i -> Printf.printf "%d\n" i) output
     | `Fail er -> Printf.eprintf "Syntax error: %s\n" er
-(*  with Invalid_argument _ ->
-    Printf.printf "Usage: rc [-i | -s] <input file.expr>\n"*)
+  with Invalid_argument _ ->
+    Printf.printf "Usage: rc [-i | -s] <input file.expr>\n"

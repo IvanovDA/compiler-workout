@@ -44,10 +44,10 @@ let split n l =
 let rec evalCall env (conf:config) p instr =
   let cst, stack, (s, i, o, r) = conf in
   match instr with
-        | CALL(name, argc, needRetval) -> (
-        if env#is_label name
-          then eval env ((p, s)::cst, stack, (s, i, o, r)) (env#labeled name)
-          else eval env (env#builtin conf name argc needRetval) p
+    | CALL(name, argc, needRetval) -> (
+      if env#is_label name
+        then eval env ((p, s)::cst, stack, (s, i, o, r)) (env#labeled name)
+        else eval env (env#builtin conf name argc needRetval) p
       )
     | _ -> failwith "Not a function call."
     
@@ -158,7 +158,6 @@ and compileExpr t =
   | Expr.Var v            -> [LD v]
   | Expr.Binop(op, a, b)  -> compileExpr a @ compileExpr b @ [BINOP op]
   | Expr.Call(name, args) -> compileArgs args @ [CALL(name, List.length args, true)]
-  | Expr.Array x          -> compileCall ".array" x true
 
 and compileArgs args =
   let rec impl args = match args with
@@ -214,7 +213,14 @@ let rec compileFuns labels funs = match funs with
    stack machine
 *)
 
+let codelogf = open_out (Printf.sprintf "sm_code.log")
+
+let rec debugPrint p = match p with
+  | i::p -> Printf.fprintf codelogf "%s\n" (GT.transform(insn) new @insn[show] () i); debugPrint p
+  | _ -> ()
+
 let compile (funs, p) =
   let labels, funscode = compileFuns (0, 0, 0) funs in
   let _, code = compileImpl labels p in
-  code @ [END] @ funscode
+  let code = code @ [END] @ funscode in
+  debugPrint code; code

@@ -76,16 +76,15 @@ module Builtin =
     let eval (st, i, o, _) args name = match name with
       | "Lread"     -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
       | "Lwrite"    -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
-      | "Lfirst"    -> (match args with a::b::[] -> (st, i, o, a))
-      | ".elem"     ->
+      | "Belem"     ->
         let [b; j] = args in
         (st, i, o, let i = Value.to_int j in
         (match b with
           | Value.String s -> Value.of_int @@ Char.code (Bytes.get s i)
           | Value.Array  a -> a.(i)
         ))         
-      | ".length"  -> (st, i, o, Value.of_int (match List.hd args with Value.Array a -> Array.length a | Value.String s -> Bytes.length s))
-      | ".array"   -> (st, i, o, Value.of_array @@ Array.of_list args)
+      | "Blength"  -> (st, i, o, Value.of_int (match List.hd args with Value.Array a -> Array.length a | Value.String s -> Bytes.length s))
+      | "Barray"   -> (st, i, o, match args with n::args -> Value.of_array @@ Array.of_list args)
       | "LisArray"  -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
       | "LisString" -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
       | _          -> failwith (Printf.sprintf "%s() is not a (built-in) function." name)
@@ -99,8 +98,7 @@ module Expr =
        notation, it came from GT. 
     *)
     @type t =
-    (* integer constant *) | Const  of Value.t
-    (* arbitrary array  *) | Array  of t list
+    (* constant         *) | Const  of Value.t
     (* variable         *) | Var    of string
     (* binary operator  *) | Binop  of string * t * t 
     (* function call    *) | Call   of string * t list
@@ -178,9 +176,6 @@ module Expr =
       | Call(name, args) ->
         let (conf, argvals) = evalArgs env conf args in
         env#definition env name argvals conf
-      | Array(vals) ->
-        let (s, i, o, _), vals = evalArgs env conf vals in
-        (s, i, o, Value.Array (Array.of_list vals))
         
     (* Expression parser. You can use the following terminals:
 
@@ -193,7 +188,7 @@ module Expr =
       let rec inner x ids = 
         match ids with
           | [] -> x
-          | id::ids -> inner (Call(".elem", [x; id])) ids
+          | id::ids -> inner (Call("Belem", [x; id])) ids
       in inner (Var x) ids
       
     ostap (                                      
@@ -230,9 +225,9 @@ module Expr =
         n:DECIMAL {Const (Value.Int n)}
       | c:CHAR {Const (Value.Int (Char.code c))}
       | s:STRING {Const (Value.String (Bytes.of_string (String.sub s 1 (String.length s - 2))))}
-      | "[" exprlist:!(exprlist) "]" {Array exprlist}
+      | "[" exprlist:!(exprlist) "]" {Call("Barray", [Const (Value.Int (List.length exprlist))] @ exprlist)}
       | name:IDENT "(" arglist:!(exprlist) ")" {Call("L" ^ name, arglist)}
-      | v:!(lvalue) ".length" {Call(".length", [lvalueToRvalue v])}
+      | v:!(lvalue) ".length" {Call("Blength", [lvalueToRvalue v])}
       | x:!(lvalue) {lvalueToRvalue x}
       | -"(" parse -")"
     )
