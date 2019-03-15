@@ -6,7 +6,7 @@ while n > 0 do
     c := 2;
     f := 1;
 
-    while c*c <= p && f do
+    while c*c <= p && f do	
       f := (p % c) != 0;
       c := c + 1
     od;

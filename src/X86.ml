@@ -50,7 +50,7 @@ type instr =
 (* arithmetic correction: or 0x0001                     *) | Or1   of opnd
 (* arithmetic correction: shl 1                         *) | Sal1  of opnd
 (* arithmetic correction: shr 1                         *) | Sar1  of opnd
-						 
+                         
 (* Instruction printer *)
 let printInstr instr =
   let binop = function
@@ -108,10 +108,10 @@ let rec printList l = (match l with
                     
 class env =
   object (self)
-	val globals     = S.empty (* a set of global variables         *)
-	val stringm     = M.empty (* a string map                      *)
-	val scount      = 0       (* string count                      *)
-	val stack_slots = 0       (* maximal number of stack positions *)
+    val globals     = S.empty (* a set of global variables         *)
+    val stringm     = M.empty (* a string map                      *)
+    val scount      = 0       (* string count                      *)
+    val stack_slots = 0       (* maximal number of stack positions *)
     val stack       = []      (* symbolic stack                    *)
     val args        = []      (* function arguments                *)
     val locals      = []      (* function local variables          *)
@@ -188,7 +188,7 @@ class env =
         let y = Printf.sprintf "string_%d" scount in
         let m = M.add x y stringm in
         y, {< scount = scount + 1; stringm = m>}
-		
+        
     (* gets all string definitions *)      
     method strings = M.bindings stringm
       
@@ -248,7 +248,7 @@ let rec compileCall env name arg_amount hasRetval =
   let env, code = env, s @ push @ [Call name; Binop ("+", L (arg_amount * word_size), esp)] @ r in
   if hasRetval
     then let rv, env = env#allocate in env, code @ [Mov (eax, rv)]
-	else env, code
+    else env, code
   
 and compileInstr (env:env) i =
   let env, code = match i with
@@ -262,20 +262,20 @@ and compileInstr (env:env) i =
     let s, env = (env#global v)#pop in
     env, movImpl s (env#loc v)
   | STA (x, n) ->
-	let env = env#push (L n) in
-	let s, env = (env#global x)#allocate in
-	let push =
-	  match s with
-	    | S _ | M _ -> [Mov (env#loc x, eax); Mov (eax, s)]
-	    | _         -> [Mov (env#loc x, s)]
-	in
-	let env, code = compileCall env "Bsta" (n + 2) false in
-	env, push @ code
+    let env = env#push (L n) in
+    let s, env = (env#global x)#allocate in
+    let push =
+      match s with
+        | S _ | M _ -> [Mov (env#loc x, eax); Mov (eax, s)]
+        | _         -> [Mov (env#loc x, s)]
+    in
+    let env, code = compileCall env "Bsta" (n + 2) false in
+    env, push @ code
   | STRING s ->
     let s, env = env#string s in
-	let l, env = env#allocate in
-	let env, call = compileCall env "Bstring" 1 true in
-	(env, Mov (M ("$" ^ s), l) :: call)
+    let l, env = env#allocate in
+    let env, call = compileCall env "Bstring" 1 true in
+    (env, Mov (M ("$" ^ s), l) :: call)
   | LABEL label -> env, [Label label]
   | JMP label -> env, [Jmp label]
   | CJMP(needZero, label) ->
@@ -299,29 +299,29 @@ and compileInstr (env:env) i =
     let b, a, env = env#pop2 in
     match op with
       | "+" ->
-	    let env, code = if inRegister a
-		  then env#push a, [Binop(op, b, a)]
-		  else (
+        let env, code = if inRegister a
+          then env#push a, [Binop(op, b, a)]
+          else (
             if inRegister b
               then env#push b, [Binop(op, a, b)]
-		      else env#push a, [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)]
-			)
-		in env, (Dec (b)) :: code
-	  | "-" ->
-	    env#push a, (Dec (b)) ::
-		if inRegister a
-		  then [Binop(op, b, a)]
-		  else [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)]
-	  | "*" ->
-	    let env, code = if inRegister a
-		  then env#push a, [Binop(op, b, a)] @ box a
-		  else (
-		    if inRegister b
+              else env#push a, [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)]
+            )
+        in env, (Dec (b)) :: code
+      | "-" ->
+        env#push a, (Dec (b)) ::
+        if inRegister a
+          then [Binop(op, b, a)]
+          else [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)]
+      | "*" ->
+        let env, code = if inRegister a
+          then env#push a, [Binop(op, b, a)] @ box a
+          else (
+            if inRegister b
               then env#push b, [Binop(op, a, b)] @ box b
-		      else env#push a, [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)] @ box a
-		  )
-	    in env, unbox b @ unbox a @ code
-	  | "/" | "%" -> 
+              else env#push a, [Mov(a, eax); Binop(op, b, eax); Mov(eax, a)] @ box a
+          )
+        in env, unbox b @ unbox a @ code
+      | "/" | "%" -> 
         let result = match op with
           | "/" -> eax
           | _ -> edx
@@ -335,12 +335,12 @@ and compileInstr (env:env) i =
           Binop (op, eax, edx)
         ] @ box edx @ [Mov (edx, a)]
       | "<" | "<=" | ">" | ">=" | "==" | "!=" ->
-	    (* Optimizable with regards to second operand *)
+        (* Optimizable with regards to second operand *)
         env#push a,
         (if inRegister a
           then [zeroOut eax; Binop ("cmp", b, a)]
           else [zeroOut eax; Mov (a, edx); Binop ("cmp", b, edx)]
-		) @ [Set(compSuffix op, "%al")] @ box eax @ [Mov (eax, a)] 
+        ) @ [Set(compSuffix op, "%al")] @ box eax @ [Mov (eax, a)] 
       | _ -> failwith "[X86] Unsupported binary operator"
   )
   (*in env, [Comm (GT.transform(insn) new @insn[show] () i)] @ code*)
