@@ -108,9 +108,9 @@ module State =
 module Builtin =
   struct
     let rec eval (st, i, o, _) args name = match name with
-      | "Lread"     -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
-      | "Lwrite"    -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
-      | "Belem"     ->
+      | "Lread"      -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
+      | "Lwrite"     -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
+      | "Belem"      ->
         let [b; j] = args in
         (st, i, o, let i = Value.to_int j in
         (match b with
@@ -118,11 +118,17 @@ module Builtin =
           | Value.Array  a -> a.(i)
 		  | Value.Sexp (_, s) -> List.nth s i
         ))
-	  | "BsexpElem" -> eval (st, i, o, Value.Void) (List.rev args) "Belem"
-      | "Blength"   -> (st, i, o, Value.of_int (match List.hd args with Value.Array a -> Array.length a | Value.String s -> Bytes.length s))
-      | "Barray"    -> (st, i, o, match args with n::args -> Value.of_array @@ Array.of_list args)
-      | "LisArray"  -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
-      | "LisString" -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
+	  | "BsexpElem"  -> eval (st, i, o, Value.Void) (List.rev args) "Belem"
+      | "Blength"    -> (st, i, o, Value.of_int (match List.hd args with Value.Array a -> Array.length a | Value.String s -> Bytes.length s))
+      | "Barray"     -> (st, i, o, match args with n::args -> Value.of_array @@ Array.of_list args)
+      | "LisArray"   -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
+      | "LisString"  -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
+	  | "Bstringval" -> let rec to_string = function
+                          | Value.Int i       -> string_of_int i
+                          | Value.String s    -> "\"" ^ Bytes.to_string s ^ "\""
+                          | Value.Array a     -> "[" ^ String.concat ", " (List.map to_string (Array.to_list a)) ^ "]"
+                          | Value.Sexp (m, a) -> "`" ^ m ^ if List.length a = 0 then "" else " (" ^ String.concat ", " (List.map to_string a) ^ ")"
+                        in (st, i, o, (Value.of_string (Bytes.of_string (to_string (List.hd args)))))
       | _          -> failwith (Printf.sprintf "%s() is not a (built-in) function." name)
   end
 
@@ -247,7 +253,11 @@ module Expr =
             `Lefta, ["*" ; "/"; "%"];
           |] 
         )
-        primary);
+        stringified_if_necessary);
+		
+	  stringified_if_necessary:
+	    v:!(primary) ".string" {Call("Bstringval", [v])}
+	  | v:!(primary) {v};
 
       exprlist:
         v:!(parse) "," rest:!(exprlist) {[v] @ rest} 

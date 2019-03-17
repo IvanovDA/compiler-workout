@@ -44,6 +44,7 @@ type instr =
 (* a conditional jump                                   *) | CJmp  of string * string
 (* a non-conditional jump                               *) | Jmp   of string
 (* directive                                            *) | Meta  of string
+(* swap                                                 *) | Swap  of opnd * opnd
 (* comment                                              *) | Comm  of string
                          
 (* arithmetic correction: decrement                     *) | Dec   of opnd
@@ -85,11 +86,12 @@ let printInstr instr =
   | Jmp    l           -> Printf.sprintf "\tjmp\t%s" l
   | CJmp  (s , l)      -> Printf.sprintf "\tj%s\t%s" s l
   | Meta   s           -> Printf.sprintf "%s\n" s
+  | Swap  (s1, s2)     -> Printf.sprintf "\txchgl\t%s,\t%s"   (opnd s1) (opnd s2)
   | Comm   s           -> Printf.sprintf "#%s" s
-  | Dec    s           -> Printf.sprintf "\tdecl\t%s" (opnd s)
+  | Dec    s           -> Printf.sprintf "\tdecl\t%s"      (opnd s)
   | Or1    s           -> Printf.sprintf "\torl \t$0x0001,\t%s" (opnd s)
-  | Sal1   s           -> Printf.sprintf "\tsall\t%s" (opnd s)
-  | Sar1   s           -> Printf.sprintf "\tsarl\t%s" (opnd s)
+  | Sal1   s           -> Printf.sprintf "\tsall\t%s"      (opnd s)
+  | Sar1   s           -> Printf.sprintf "\tsarl\t%s"      (opnd s)
   
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -98,7 +100,7 @@ module S = Set.Make (String)
 module M = Map.Make (String) 
 
 (* Environment implementation *)
-let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
+let make_assoc l st_val = List.combine l (List.init (List.length l) (fun x -> x + st_val))
                     
 let rec printList l = (match l with
   | [] -> Printf.printf "\n"
@@ -107,6 +109,8 @@ let rec printList l = (match l with
 )
                     
 class env =
+  let chars          = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNJPQRSTUVWXYZ" in
+  let rec assoc  x   = function [] -> raise Not_found | l :: ls -> try List.assoc x l with Not_found -> assoc x ls in
   object (self)
     val globals     = S.empty (* a set of global variables         *)
     val stringm     = M.empty (* a string map                      *)
@@ -130,7 +134,7 @@ class env =
     method loc x =
       try S (- (List.assoc x args)  -  1)
       with Not_found ->  
-        try S (List.assoc x locals) with Not_found -> M ("global_" ^ x)
+        try S (assoc x locals) with Not_found -> M ("global_" ^ x)
         
     (* allocates a fresh position on a symbolic stack *)
     method allocate =    
@@ -159,7 +163,18 @@ class env =
     method pop2 = match stack with
       | x::y::stack' -> x, y, {< stack = stack' >}
       | _ -> failwith "[X86] Not enough values on the stack."
+	  
+	(* peeks the top of the stack (the stack does not change) *)
+	method peek = List.hd stack
 
+	(* tag hash: gets a hash for a string tag *)
+    method hash tag =
+      let h = Pervasives.ref 0 in
+      for i = 0 to min (String.length tag - 1) 4 do
+        h := (!h lsl 6) lor (String.index chars tag.[i])
+      done;
+      !h      
+	  
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
 
@@ -172,8 +187,19 @@ class env =
     (* enters a function *)
     method enter f a l =
 	  let n = List.length l in
-      {< static_size = n; stack_slots = n; stack = []; locals = make_assoc l; args = make_assoc a; fname = f >}
+      {< static_size = n; stack_slots = n; stack = []; locals = [make_assoc l 0]; args = make_assoc a 0; fname = f >}
 
+	(* enters a scope *)
+    method scope vars =
+      let n = List.length vars in
+      let static_size' = n + static_size in
+      {< stack_slots = max stack_slots static_size'; static_size = static_size'; locals = (make_assoc vars static_size) :: locals >}
+
+    (* leaves a scope *)
+    method unscope =
+      let n = List.length (List.hd locals) in
+      {< static_size = static_size - n; locals = List.tl locals >}
+	  
     (* returns a label for the epilogue *)
     method epilogue = Printf.sprintf "%s_epilogue" fname
                                      
@@ -218,14 +244,7 @@ let inRegister x = match x with
 let inMemory x = match x with
   | S _ | M _ -> true
   | _ -> false
-
-let movImpl a b = 
-  if (a = b) then []
-  else
-    if (inMemory a) && (inMemory b)
-      then [Mov (a, eax); Mov (eax, b)]
-      else [Mov (a, b)]
-
+	  
 let compSuffix op = match op with
   | "<"  -> "lb"
   | "<=" -> "leb"
@@ -237,26 +256,48 @@ let compSuffix op = match op with
   
 let zeroOut reg = Binop("^", reg, reg)
 
+let movImpl a b = 
+  if (a = b) then []
+  else
+    if (inMemory a) && (inMemory b)
+      then [Mov (a, eax); Mov (eax, b)]
+      else [Mov (a, b)]
+
+(* Like a half of this is mostly pointless and assumes there will be some eax-related optimizations down the line *)
+let rec swapImpl a b =
+  if (a = b) then []
+  else
+    if (inRegister a) && (inRegister b)
+	  then [Swap (a, b)]
+	  else
+	    if (inRegister a)
+		  then [Mov(b, eax)] @ swapImpl a eax @ [Mov(eax, b)]
+		  else
+		    if (inRegister b)
+		      then [Mov(a, eax)] @ swapImpl b eax @ [Mov(eax, a)]
+			  else
+			    let xor a b = [Binop("^", a, b)] in
+				xor eax eax @ xor a eax @ xor b eax @ xor eax a @ xor eax b
+
 let unbox x = [Sar1 (x)]
 let box x = [Sal1 x; Or1 x]
 
-(* to make this support _specifically_ STA i need to add a) custom prologues b) "how much to clean up" *)
-(* i doubt at this point that's good coding style *)
-let rec compileCall env name arg_amount hasRetval =
-  let rec push env acc = function
-    | 0 -> env, acc
-    | n -> let x, env = env#pop in push env (Push x :: acc) (n - 1)
-  in
-  let env, push = push env [] arg_amount in
+let rec split env acc = function
+  | 0 -> env, acc
+  | n -> let x, env = env#pop in split env (x :: acc) (n - 1)
+
+let rec compileCall env name arg_amount arg_prepushed prelude hasRetval =
+  let env, push = split env [] arg_amount in
+  let push = List.map (fun x -> Push x) push in
   let s = List.map (fun x -> Push x) env#live_registers in
   let r = List.rev (List.map (fun x -> Pop x) env#live_registers) in
-  let env, code = env, s @ push @ [Call name; Binop ("+", L (arg_amount * word_size), esp)] @ r in
+  let env, code = env, s @ push @ prelude @ [Call name; Binop ("+", L ((arg_amount + arg_prepushed) * word_size), esp)] @ r in
   if hasRetval
     then let rv, env = env#allocate in env, code @ [Mov (eax, rv)]
     else env, code
   
 and compileInstr (env:env) i =
-  let slots_before = Printf.sprintf "%d" (env#allocated) in
+  let slots_before = Printf.sprintf "%d" (env#size) in
   let env, code = match i with
   | CONST n ->
     let a, env = env#allocate in
@@ -268,16 +309,13 @@ and compileInstr (env:env) i =
     let s, env = (env#global v)#pop in
     env, movImpl s (env#loc v)
   | STA (x, n) ->
-    let n_loc, env = env#allocate in
-    let x_loc, env = (env#global x)#allocate in
-    let push = (movImpl (L n) n_loc) @ (movImpl (env#loc x) x_loc) in
-    let env, code = compileCall env "Bsta" (n + 3) false in
-    env, push @ code
+    let prelude = [Push (L n); Push (env#loc x)] in
+    let env, code = compileCall env "Bsta" (n + 1) 2 prelude false in
+    env, code
   | STRING s ->
     let s, env = env#string s in
-    let l, env = env#allocate in
-    let env, call = compileCall env "Bstring" 1 true in
-    (env, Mov (M ("$" ^ s), l) :: call)
+    let env, code = compileCall env "Bstring" 0 1 [Push (M ("$" ^ s));] true in
+    (env, code)
   | LABEL label -> env, [Label label]
   | JMP label -> env, [Jmp label]
   | CJMP(needZero, label) ->
@@ -293,10 +331,37 @@ and compileInstr (env:env) i =
   | RET true  ->
     let retval, prev_env = env#pop in
     prev_env, [Mov (retval, eax); Jmp env#epilogue]
-  | CALL(name, arg_amount, hasRetval) -> compileCall env name arg_amount hasRetval
+  | CALL(name, arg_amount, hasRetval) -> compileCall env name arg_amount 0 [] hasRetval
   | BEGIN(f, args, locs)  ->
     let env = env#enter f args locs in
     env, [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ env#lsize), esp)]
+  | DUP ->
+    let a = env#peek in
+	let b, env = env#allocate in
+	env, movImpl a b
+  | SWAP ->
+    let _, _, env = env#pop2 in
+	let a, env = env#allocate in
+	let b, env = env#allocate in
+	env, swapImpl a b
+  | DROP -> let _, env = env#pop in env, []
+  | TAG tag ->
+    let tag = env#hash tag in
+	let prelude = [Push (L tag)] in
+	let env, code = compileCall env "Btag" 1 1 prelude true in
+	(env, code)
+  | LEAVE -> let _, env = (env#unscope)#allocate in env, []
+  | ENTER vars ->
+    let env = env#scope vars in
+    let env, vals = split env [] (List.length vars) in
+	env,
+	List.concat (List.map
+	  (fun (vr, vl) -> movImpl vl (env#loc vr))
+	  (List.combine vars (List.rev vals))
+	)
+  | SEXP (tag, n) ->
+    let tag = env#hash tag in
+	compileCall env "Bsexp" n 2 [Push (L n); Push (L tag)] true
   | BINOP op -> (
     let b, a, env = env#pop2 in
     match op with
@@ -345,7 +410,7 @@ and compileInstr (env:env) i =
         ) @ [Set(compSuffix op, "%al")] @ box eax @ [Mov (eax, a)] 
       | _ -> failwith "[X86] Unsupported binary operator"
   ) in
-  let slots_after = Printf.sprintf "%d" (env#allocated) in
+  let slots_after = Printf.sprintf "%d" (env#size) in
   env, [Comm ((GT.transform(insn) new @insn[show] () i) ^ " " ^ slots_before ^ " -> " ^ slots_after)] @ code
   (*in env, code*)
   (*| _ -> failwith (Printf.sprintf "[X86] Unimplemented instruction: %s" (GT.transform(insn) new @insn[show] () i))*)
