@@ -8,6 +8,7 @@ open Language
 (* load a variable to the stack    *) | LD     of string
 (* store a variable from the stack *) | ST     of string
 (* store in an array               *) | STA    of string * int
+(* array name and indices amount   *)
 (* store a string on the stack     *) | STRING of string
 (* a label                         *) | LABEL  of string
 (* unconditional jump              *) | JMP    of string                                                                                                                
@@ -16,7 +17,15 @@ open Language
 (* end procedure definition        *) | END
 (* calls a procedure               *) | CALL   of string * int * bool
 (* name, argc, is a function       *)
-(* returns from a function         *) | RET    of bool with show
+(* returns from a function         *) | RET    of bool
+(* create an s-expression          *) | SEXP   of string * int
+(* tag, length                     *)
+(* checks the tag of S-expression  *) | TAG     of string
+(* enters a scope                  *) | ENTER  of string list
+(* leaves a scope                  *) | LEAVE
+(* duplicates the top element      *) | DUP
+(* swaps two top elements          *) | SWAP
+(* drops the top element off       *) | DROP with show
                                                    
 (* The type for the stack machine program *)                                                               
 type prg = insn list
@@ -55,7 +64,9 @@ and eval env (conf:config) p =
   let cst, stack, (s, i, o, r) = conf in
   match p with
     | [] -> conf
-    | instr::p -> match instr with
+    | instr::p -> 
+	  (*Printf.printf "%s\n%!" (GT.transform(insn) new @insn[show] () instr);*)
+	  match instr with
       | BINOP op -> (
         match stack with
           | b::a::stack -> eval env (cst, [Expr.evalBinop op a b] @ stack, (s, i, o, r)) p
@@ -101,7 +112,40 @@ and eval env (conf:config) p =
           | (p, old_scope)::cst -> eval env (cst, stack, (State.leave s old_scope, i, o, r)) p
       )
       | CALL(_, _, _) -> evalCall env conf p instr
-      | _ -> failwith "[SM] Unsupported instruction"
+      | SEXP(tag, argc) ->
+        let children, stack = split argc stack in
+        eval env (cst, Value.Sexp(tag, children)::stack, (s, i, o, r)) p
+      | TAG(req_tag) ->
+        let sexp::stack = stack in
+        (match sexp with
+          | Value.Sexp(val_tag, _) -> eval env (cst, Value.Int(if val_tag = req_tag then 1 else 0)::stack, (s, i, o, r)) p
+		  | Value.Int n -> failwith (Printf.sprintf "[SM] Evaluating a tag of an int %d" n)
+        )
+      | DUP ->
+	    let x::stack = stack in
+		(*let debugOutput x = 
+		  let rec dump x = match x with
+		  | Value.Int n -> Printf.printf "%d, " n
+		  | Value.Sexp(s, children) ->
+		    Printf.printf "`%s (" s; List.map (dump) children; Printf.printf "), "
+		  in
+		  Printf.printf "\tDUP("; dump x; Printf.printf ")\n"
+	    in
+		debugOutput x;*)
+	    eval env (cst, x::x::stack, (s, i, o, r)) p
+      | SWAP -> let x::y::stack = stack in eval env (cst, y::x::stack, (s, i, o, r)) p
+      | DROP -> let x::stack = stack in eval env (cst, stack, (s, i, o, r)) p
+      | ENTER vars ->
+        let vals, stack = split (List.length vars) stack in
+        let rec consumeVals s vars vals = match vars, vals with
+          | [], [] -> s
+          | var::vars, value::vals ->
+            let s = State.update var value s in consumeVals s vars vals
+        in
+        let s = consumeVals (State.push s State.default vars) vars vals in
+        eval env (cst, stack, (s, i, o, r)) p
+      | LEAVE -> eval env (cst, stack, (State.drop s, i, o, r)) p
+      | _ -> failwith (Printf.sprintf "[SM] Unsupported instruction: %s" (GT.transform(insn) new @insn[show] () instr))
 
 (* Top-level evaluation
 
@@ -136,13 +180,23 @@ let run p i =
     p
   in o
   
-(* Storage/generator for labels
-     Stores last label indices for if, while, repeat, in that order
-*)
-
-type labelStorage = int * int * int
-
-let labelName op counter = Printf.sprintf "LABEL_%s%d" op counter
+(* Storage/generator for labels *)
+module Labels = 
+  struct
+    type t = (string -> int)
+  
+    let default = fun tag -> 0
+  
+    let grab storage tag =
+      let n = storage tag in
+      let label = Printf.sprintf "%s_%d" tag n in
+      (fun x -> if x = tag then n + 1 else storage x), label
+    
+    let grab2 storage tag =
+      let storage, label_1 = grab storage tag in
+      let storage, label_2 = grab storage tag in
+      storage, label_1, label_2
+  end
 
 let rec compileCall name argvals ret =
   let n = List.length argvals in 
@@ -150,22 +204,85 @@ let rec compileCall name argvals ret =
 
 and compileExpr t = 
   match t with
-  | Expr.Const n          -> (
+  | Expr.Const n             -> (
     match n with
-      | Value.Int n      -> [CONST n]
-      | Value.String str -> [STRING (Bytes.to_string str)]
+      | Value.Int n          -> [CONST n]
+      | Value.String str     -> [STRING (Bytes.to_string str)]
   )
-  | Expr.Var v            -> [LD v]
-  | Expr.Binop(op, a, b)  -> compileExpr a @ compileExpr b @ [BINOP op]
-  | Expr.Call(name, args) -> compileArgs args @ [CALL(name, List.length args, true)]
-
+  | Expr.Var v               -> [LD v]
+  | Expr.Binop(op, a, b)     -> compileExpr a @ compileExpr b @ [BINOP op]
+  | Expr.Call(name, args)    -> compileArgs args @ [CALL(name, List.length args, true)]
+  | Expr.Sexp(tag, children) -> compileArgs children @ [SEXP(tag, List.length children)]
+  
 and compileArgs args =
   let rec impl args = match args with
   | [] -> []
   | (arg::args) -> compileExpr arg @ impl args
   in impl (List.rev args)
 
-and compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p with
+and compileAccessList ids =
+  let rec inner ids = 
+    match ids with
+     | [] -> []
+     | id::ids -> [CONST id; CALL("BsexpElem", 2, true)] @ (compileAccessList ids)
+  in
+  inner (List.rev ids)
+  
+and compileCase labels cases =
+  let rec checkList ps ids next = 
+    let rec checkNext ps ids n next =
+      match ps with
+        | [] -> []
+        | p::ps -> check p (n::ids) next @ checkNext ps ids (n + 1) next
+    in
+    checkNext ps ids 0 next
+  (*maybe it makes sense to compare lengths first. nearly always we are more likely to not match a pattern than to match.*)
+  and check pattern ids next = match pattern with
+    | Stmt.Pattern.Wildcard | Stmt.Pattern.Ident _ -> []
+    | Stmt.Pattern.Sexp (tag, children) -> [DUP] @ compileAccessList ids @ [TAG tag; CJMP("z", next)] @ checkList children ids next
+  in
+  let rec captures pattern = match pattern with
+    | Stmt.Pattern.Wildcard -> []
+    | Stmt.Pattern.Ident v -> [v]
+    | Stmt.Pattern.Sexp (tag, children) -> List.concat(List.map captures children)
+  in
+  let bind pattern ids next = match pattern with
+    | Stmt.Pattern.Wildcard -> []
+    | Stmt.Pattern.Ident v -> compileAccessList ids
+    | Stmt.Pattern.Sexp (tag, children) -> 
+      let rec bindList ps ids next =      
+        let rec bindNext ps ids n next =
+          match ps with
+            | [] -> []
+            | p::ps -> 
+              match p with
+              | Stmt.Pattern.Wildcard -> []
+              | Stmt.Pattern.Ident _ -> DUP :: compileAccessList (n::ids) @ [SWAP] @ bindNext ps ids (n + 1) next
+              | Stmt.Pattern.Sexp (tag, children) -> bindList children (n::ids) next @ bindNext ps ids (n + 1) next
+        in
+        bindNext ps ids 0 next
+      in
+      bindList children ids next
+  in
+  let labels, endLabel = Labels.grab labels "CASE_END" in
+  let compileOneCase labels case next = match case with (cause, effect) ->
+    let labels, effect = compileImpl labels effect in
+    labels, check cause [] next @ bind cause [] next @ [DROP; ENTER(List.rev(captures cause))] @ effect
+  in
+  let rec compileCases labels cases = match cases with
+    | [] -> labels, [LABEL endLabel] (*shouldn't be possible, but just in case; better forbid on language level?*)
+    | [case] -> 
+      let labels, code = compileOneCase labels case endLabel in
+      labels, code @ [LABEL endLabel]
+    | case::cases ->
+      let labels, nextLabel = Labels.grab labels "CASE" in
+      let labels, code = compileOneCase labels case nextLabel in
+      let labels, tail = compileCases labels cases in
+      labels, code @ [JMP endLabel; LABEL nextLabel] @ tail
+  in
+  compileCases labels cases
+    
+and compileImpl (labels:Labels.t) p = match p with
   | Stmt.Assign(v, [], x)   -> labels, compileExpr x @ [ST v]
   | Stmt.Assign(v, is, x)   -> labels, compileArgs is @ compileExpr x @ [STA (v, List.length is)]
   | Stmt.Seq(p1, p2)        -> 
@@ -174,28 +291,32 @@ and compileImpl ((labelIf, labelWhile, labelRepeat) as labels) p = match p with
     labels, code1 @ code2
   | Stmt.Skip               -> labels, []
   | Stmt.If(cond, p1, p2)   ->
-    let thenLabel, exitLabel = labelName "IF" labelIf, labelName "IF" (labelIf + 1) in
-    let labels, codeElse = compileImpl (labelIf + 2, labelWhile, labelRepeat) p2 in
+    let labels, thenLabel, exitLabel = Labels.grab2 labels "IF" in
+    let labels, codeElse = compileImpl labels p2 in
     let labels, codeThen = compileImpl labels p1 in
     labels,
     compileExpr cond @ [CJMP("nz", thenLabel)] @
     codeElse @ [JMP(exitLabel); LABEL(thenLabel)] @ 
     codeThen @ [LABEL(exitLabel)]
   | Stmt.While(cond, body)  ->
-    let condLabel, bodyLabel = labelName "WHILE" labelWhile, labelName "WHILE" (labelWhile + 1) in
-    let labels, codeBody = compileImpl (labelIf, labelWhile + 2, labelRepeat) body in
+    let labels, condLabel, bodyLabel = Labels.grab2 labels "WHILE" in
+    let labels, codeBody = compileImpl labels body in
     labels,
     [JMP(condLabel); LABEL(bodyLabel)] @
     codeBody @ [LABEL(condLabel)] @
     compileExpr cond @ [CJMP("nz", bodyLabel)]
   | Stmt.Repeat(body, cond) ->
-    let bodyLabel = labelName "REPEAT" labelRepeat in
-    let labels, codeBody = compileImpl (labelIf, labelWhile, labelRepeat + 1) body in
+    let labels, bodyLabel = Labels.grab labels "REPEAT" in
+    let labels, codeBody = compileImpl labels body in
     labels,
     [LABEL(bodyLabel)] @ codeBody @ compileExpr cond @ [CJMP("z", bodyLabel)]
   | Stmt.Call(name, argvals) -> labels, compileCall name argvals false
   | Stmt.Return(None)        -> labels, [RET false]
   | Stmt.Return(Some e)      -> labels, compileExpr e @ [RET true]
+  | Stmt.Case(value, cases)  ->
+    let labels, code = compileCase labels cases in
+    labels, compileExpr value @ code
+  | Stmt.Leave               -> labels, [LEAVE]
   
 let rec compileFuns labels funs = match funs with
   | [] -> labels, []
@@ -213,14 +334,15 @@ let rec compileFuns labels funs = match funs with
    stack machine
 *)
 
+(*
 let codelogf = open_out (Printf.sprintf "sm_code.log")
 
 let rec debugPrint p = match p with
   | i::p -> Printf.fprintf codelogf "%s\n" (GT.transform(insn) new @insn[show] () i); debugPrint p
   | _ -> ()
-
+*)
 let compile (funs, p) =
-  let labels, funscode = compileFuns (0, 0, 0) funs in
+  let labels, funscode = compileFuns Labels.default funs in
   let _, code = compileImpl labels p in
   let code = code @ [END] @ funscode in
-  debugPrint code; code
+  (*debugPrint code;*) code

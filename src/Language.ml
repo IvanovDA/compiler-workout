@@ -18,8 +18,10 @@ module Value =
       
     let to_int = function
       | Int n -> n
-      | String s -> failwith (Printf.sprintf "Wanted an int, got %s" (Bytes.to_string s))
-      (*| _ -> failwith "Int value expected"*)
+      | String s -> failwith (Printf.sprintf "Wanted an int, got a string: %s" (Bytes.to_string s))
+      | Array a -> failwith (Printf.sprintf "Wanted an int, got an array of length %d" (Array.length a))
+	  | Sexp (tag, _) -> failwith (Printf.sprintf "Wanted an int, got a sexp, tagged %s" tag)
+	  | Void -> failwith "Wanted an int, got a void"
       
     let to_string = function 
       | String s -> Bytes.to_string s 
@@ -105,7 +107,7 @@ module State =
 (* Builtins *)
 module Builtin =
   struct
-    let eval (st, i, o, _) args name = match name with
+    let rec eval (st, i, o, _) args name = match name with
       | "Lread"     -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
       | "Lwrite"    -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
       | "Belem"     ->
@@ -114,9 +116,11 @@ module Builtin =
         (match b with
           | Value.String s -> Value.of_int @@ Char.code (Bytes.get s i)
           | Value.Array  a -> a.(i)
-        ))         
-      | "Blength"  -> (st, i, o, Value.of_int (match List.hd args with Value.Array a -> Array.length a | Value.String s -> Bytes.length s))
-      | "Barray"   -> (st, i, o, match args with n::args -> Value.of_array @@ Array.of_list args)
+		  | Value.Sexp (_, s) -> List.nth s i
+        ))
+	  | "BsexpElem" -> eval (st, i, o, Value.Void) (List.rev args) "Belem"
+      | "Blength"   -> (st, i, o, Value.of_int (match List.hd args with Value.Array a -> Array.length a | Value.String s -> Bytes.length s))
+      | "Barray"    -> (st, i, o, match args with n::args -> Value.of_array @@ Array.of_list args)
       | "LisArray"  -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
       | "LisString" -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
       | _          -> failwith (Printf.sprintf "%s() is not a (built-in) function." name)
@@ -133,7 +137,7 @@ module Expr =
     (* constant         *) | Const  of Value.t
     (* variable         *) | Var    of string
     (* binary operator  *) | Binop  of string * t * t 
-    (* S-expressions    *) | Sexp      of string * t list
+    (* S-expressions    *) | Sexp   of string * t list
     (* function call    *) | Call   of string * t list
     
     (* Available binary operators:
@@ -417,7 +421,7 @@ module Stmt =
                   | Some (p, v) -> Some (p, v, effect)
             in let branch = switch r cases in
             match branch with
-              | None -> close_out outf; failwith "No pattern matches."
+              | None -> failwith "No pattern matches."
               | Some (vars, vals, effect) ->
                 let s = State.push s State.default vars in
                 let rec massUpdate xs vs s =

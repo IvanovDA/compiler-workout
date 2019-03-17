@@ -37,42 +37,20 @@ extern int Blength (void *p) {
   return BOX(LEN(a->tag));
 }
 
-typedef struct {
-  char *contents;
-  int ptr;
-  int len;
-} StringBuf;
-
-static StringBuf stringBuf;
-
-# define STRINGBUF_INIT 128
-
-static void createStringBuf () {
-  stringBuf.contents = (char*) malloc (STRINGBUF_INIT);
-  stringBuf.ptr      = 0;
-  stringBuf.len      = STRINGBUF_INIT;
-}
-
-static void deleteStringBuf () {
-  free (stringBuf.contents);
-}
-
-static void extendStringBuf () {
-  int len = stringBuf.len << 1;
-
-  stringBuf.contents = (char*) realloc (stringBuf.contents, len);
-  stringBuf.len      = len;
-}
-
 extern void* Belem (void *p, int i) {
+  //printf("Belem: %d[%d]\n", (int)p, UNBOX(i));
+  
   data *a = TO_DATA(p);
   i = UNBOX(i);
-
+  
+  
   if (TAG(a->tag) == STRING_TAG) {
     return (void*) BOX(a->contents[i]);
   }
   
-  return (void*) ((int*) a->contents)[i];
+  void* result = (void*) ((int*) a->contents)[i];
+
+  return result;
 }
 
 extern void* Bstring (void *p) {
@@ -106,19 +84,23 @@ extern void* Barray (int n, ...) {
 }
 		 
 extern void Bsta (void *s, int n, int v, ...) {
+  //printf("Bsta(%d, %d, %d, ", (int)s, n, v);
+  
   va_list args;
   int i, k;
   data *a;
-    
+	
   va_start(args, v);
 
   for (i=0; i<n-1; i++) {
-    k = UNBOX(va_arg(args, int));
+	k = UNBOX(va_arg(args, int));
 	s = ((int**) s) [k];
   }
 
+ // printf("%d)\n", k);
+  
   k = UNBOX(va_arg(args, int));
-  a = TO_DATA(s);
+  a = TO_DATA(s);  
   
   if (TAG(a->tag) == STRING_TAG)((char*) s)[k] = (char) UNBOX(v);
   else ((int*) s)[k] = v;

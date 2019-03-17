@@ -112,6 +112,7 @@ class env =
     val stringm     = M.empty (* a string map                      *)
     val scount      = 0       (* string count                      *)
     val stack_slots = 0       (* maximal number of stack positions *)
+    val static_size = 0       (* static data size                  *)
     val stack       = []      (* symbolic stack                    *)
     val args        = []      (* function arguments                *)
     val locals      = []      (* function local variables          *)
@@ -136,15 +137,16 @@ class env =
       let x, n =
         let rec allocate' = function
           | []                            -> ebx     , 0
-          | (S n)::_                      -> S (n+1) , n+1
+          | (S n)::_                      -> S (n+1) , n+2
           | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-          | (M _)::s                      -> allocate' s
-          | _                             -> S 0     , 1
+		  | _                             -> S static_size, static_size+1
         in
         allocate' stack
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
 
+	method size = List.length stack
+	  
     (* pushes an operand to the symbolic stack *)
     method push y = {< stack = y::stack >}
 
@@ -169,13 +171,14 @@ class env =
                                 
     (* enters a function *)
     method enter f a l =
-      {< stack_slots = List.length l; stack = []; locals = make_assoc l; args = make_assoc a; fname = f >}
+	  let n = List.length l in
+      {< static_size = n; stack_slots = n; stack = []; locals = make_assoc l; args = make_assoc a; fname = f >}
 
     (* returns a label for the epilogue *)
     method epilogue = Printf.sprintf "%s_epilogue" fname
                                      
     (* returns a name for local size meta-symbol *)
-    method lsize = Printf.sprintf "L%s_SIZE" fname
+    method lsize = Printf.sprintf "%s_SIZE" fname
 
     (* returns a list of live registers *)
     method live_registers =
@@ -237,6 +240,8 @@ let zeroOut reg = Binop("^", reg, reg)
 let unbox x = [Sar1 (x)]
 let box x = [Sal1 x; Or1 x]
 
+(* to make this support _specifically_ STA i need to add a) custom prologues b) "how much to clean up" *)
+(* i doubt at this point that's good coding style *)
 let rec compileCall env name arg_amount hasRetval =
   let rec push env acc = function
     | 0 -> env, acc
@@ -251,6 +256,7 @@ let rec compileCall env name arg_amount hasRetval =
     else env, code
   
 and compileInstr (env:env) i =
+  let slots_before = Printf.sprintf "%d" (env#allocated) in
   let env, code = match i with
   | CONST n ->
     let a, env = env#allocate in
@@ -262,14 +268,10 @@ and compileInstr (env:env) i =
     let s, env = (env#global v)#pop in
     env, movImpl s (env#loc v)
   | STA (x, n) ->
-    let env = env#push (L n) in
-    let s, env = (env#global x)#allocate in
-    let push =
-      match s with
-        | S _ | M _ -> [Mov (env#loc x, eax); Mov (eax, s)]
-        | _         -> [Mov (env#loc x, s)]
-    in
-    let env, code = compileCall env "Bsta" (n + 2) false in
+    let n_loc, env = env#allocate in
+    let x_loc, env = (env#global x)#allocate in
+    let push = (movImpl (L n) n_loc) @ (movImpl (env#loc x) x_loc) in
+    let env, code = compileCall env "Bsta" (n + 3) false in
     env, push @ code
   | STRING s ->
     let s, env = env#string s in
@@ -342,9 +344,10 @@ and compileInstr (env:env) i =
           else [zeroOut eax; Mov (a, edx); Binop ("cmp", b, edx)]
         ) @ [Set(compSuffix op, "%al")] @ box eax @ [Mov (eax, a)] 
       | _ -> failwith "[X86] Unsupported binary operator"
-  )
-  (*in env, [Comm (GT.transform(insn) new @insn[show] () i)] @ code*)
-  in env, code
+  ) in
+  let slots_after = Printf.sprintf "%d" (env#allocated) in
+  env, [Comm ((GT.transform(insn) new @insn[show] () i) ^ " " ^ slots_before ^ " -> " ^ slots_after)] @ code
+  (*in env, code*)
   (*| _ -> failwith (Printf.sprintf "[X86] Unimplemented instruction: %s" (GT.transform(insn) new @insn[show] () i))*)
     
 (* Symbolic stack machine evaluator
