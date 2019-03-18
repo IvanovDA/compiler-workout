@@ -46,7 +46,9 @@ type config = (prg * State.t) list * Value.t list * Expr.config
 let split n l =
   let rec unzip (taken, rest) = function
   | 0 -> (List.rev taken, rest)
-  | n -> let h::tl = rest in unzip (h::taken, tl) (n-1)
+  | n -> match rest with
+    | h::tl -> unzip (h::taken, tl) (n-1)
+	| _ -> assert false
   in
   unzip ([], l) n
 
@@ -115,37 +117,32 @@ and eval env (conf:config) p =
       | SEXP(tag, argc) ->
         let children, stack = split argc stack in
         eval env (cst, Value.Sexp(tag, children)::stack, (s, i, o, r)) p
-      | TAG(req_tag) ->
-        let sexp::stack = stack in
-        (match sexp with
-          | Value.Sexp(val_tag, _) -> eval env (cst, Value.Int(if val_tag = req_tag then 1 else 0)::stack, (s, i, o, r)) p
-		  | Value.Int n -> failwith (Printf.sprintf "[SM] Evaluating a tag of an int %d" n)
-        )
-      | DUP ->
-	    let x::stack = stack in
-		(*let debugOutput x = 
-		  let rec dump x = match x with
-		  | Value.Int n -> Printf.printf "%d, " n
-		  | Value.Sexp(s, children) ->
-		    Printf.printf "`%s (" s; List.map (dump) children; Printf.printf "), "
-		  in
-		  Printf.printf "\tDUP("; dump x; Printf.printf ")\n"
-	    in
-		debugOutput x;*)
-	    eval env (cst, x::x::stack, (s, i, o, r)) p
-      | SWAP -> let x::y::stack = stack in eval env (cst, y::x::stack, (s, i, o, r)) p
-      | DROP -> let x::stack = stack in eval env (cst, stack, (s, i, o, r)) p
+      | TAG(req_tag) -> (match stack with
+		| sexp::stack -> (match sexp with
+	      | Value.Sexp(val_tag, _) -> eval env (cst, Value.Int(if val_tag = req_tag then 1 else 0)::stack, (s, i, o, r)) p
+		  | _ -> failwith "[SM] TAG: non-S-expression value")
+		| _ -> failwith "[SM] TAG: empty stack")
+      | DUP -> (match stack with
+	    | x::stack -> eval env (cst, x::x::stack, (s, i, o, r)) p
+		| _ -> failwith "[SM] DUP: empty stack")
+      | SWAP -> (match stack with
+	    | x::y::stack -> eval env (cst, y::x::stack, (s, i, o, r)) p
+		| _ -> failwith "[SM] SWAP: need at least two values")
+      | DROP -> (match stack with
+	    | x::stack -> eval env (cst, stack, (s, i, o, r)) p
+		| _ -> failwith "[SM] DROP: empty stack")
       | ENTER vars ->
         let vals, stack = split (List.length vars) stack in
         let rec consumeVals s vars vals = match vars, vals with
           | [], [] -> s
           | var::vars, value::vals ->
             let s = State.update var value s in consumeVals s vars vals
+		  | _ -> assert false
         in
         let s = consumeVals (State.push s State.default vars) vars vals in
         eval env (cst, stack, (s, i, o, r)) p
       | LEAVE -> eval env (cst, stack, (State.drop s, i, o, r)) p
-      | _ -> failwith (Printf.sprintf "[SM] Unsupported instruction: %s" (GT.transform(insn) new @insn[show] () instr))
+      (*| _ -> failwith (Printf.sprintf "[SM] Unsupported instruction: %s" (GT.transform(insn) new @insn[show] () instr))*)
 
 (* Top-level evaluation
 
@@ -208,6 +205,8 @@ and compileExpr t =
     match n with
       | Value.Int n          -> [CONST n]
       | Value.String str     -> [STRING (Bytes.to_string str)]
+	  | _                    -> failwith "[SM] Non-int, non-string values are not compiled through Expr.Const (which is, frankly, a bit of a mistake)"
+	  (* TODO get all the constant values to be handled through compileExpr, if possible.*)
   )
   | Expr.Var v               -> [LD v]
   | Expr.Binop(op, a, b)     -> compileExpr a @ compileExpr b @ [BINOP op]

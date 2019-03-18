@@ -6,7 +6,8 @@ open GT
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
 open Combinators
-          
+
+(* Integral types *)
 module Value =
   struct
     @type t =
@@ -14,6 +15,9 @@ module Value =
       | String of bytes
       | Array of t array
       | Sexp of string * t list
+(*	  | Closure of string * int * t list*)
+(* Function name, arity, captured values *)
+(* Let's assume captured values are in the order they are mentioned in the func, for now *)
       | Void
       
     let to_int = function
@@ -37,9 +41,8 @@ module Value =
       
     let update_string s i x = Bytes.set s i x; s 
     let update_array  a i x = a.(i) <- x; a
-      
   end
-            
+			
 (* States *)
 module State =
   struct
@@ -100,7 +103,9 @@ module State =
     let push st s xs = L (xs, s, st)
 
     (* Drop a local scope *)
-    let drop (L (_, _, e)) = e
+    let drop s = match s with
+	  | L (_, _, e) -> e
+	  | _ -> failwith "Can't drop the global scope"
     
   end
   
@@ -110,26 +115,38 @@ module Builtin =
     let rec eval (st, i, o, _) args name = match name with
       | "Lread"      -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
       | "Lwrite"     -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
-      | "Belem"      ->
-        let [b; j] = args in
-        (st, i, o, let i = Value.to_int j in
-        (match b with
-          | Value.String s -> Value.of_int @@ Char.code (Bytes.get s i)
-          | Value.Array  a -> a.(i)
-		  | Value.Sexp (_, s) -> List.nth s i
-        ))
+      | "Belem"      -> (
+	    match args with
+		  | [b; j] ->        
+			(st, i, o, let i = Value.to_int j in (match b with
+			  | Value.String s -> Value.of_int @@ Char.code (Bytes.get s i)
+			  | Value.Array  a -> a.(i)
+			  | Value.Sexp (_, s) -> List.nth s i
+			  | _ -> failwith "elem() was called for a non-enumerable structure"))
+		  | _ -> failwith "elem() needs two arguments")
 	  | "BsexpElem"  -> eval (st, i, o, Value.Void) (List.rev args) "Belem"
-      | "Blength"    -> (st, i, o, Value.of_int (match List.hd args with Value.Array a -> Array.length a | Value.String s -> Bytes.length s))
-      | "Barray"     -> (st, i, o, match args with n::args -> Value.of_array @@ Array.of_list args)
-      | "LisArray"   -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
-      | "LisString"  -> let [a] = args in (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
+      | "Blength"    -> (st, i, o, Value.of_int (match List.hd args with
+		| Value.Array a -> Array.length a
+		| Value.String s -> Bytes.length s
+		| Value.Sexp (_, s) -> List.length s
+		| _ -> failwith "length() was called for a non-enumerable structure"))
+      | "Barray"     -> (st, i, o, match args with
+	    | _::args -> Value.of_array @@ Array.of_list args
+		| _ -> failwith "array() needs at least one value provided (array length)")
+      | "LisArray"   -> (match args with
+		| [a] -> (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
+		| _ -> failwith "isArray() needs a single argument provided")
+      | "LisString"  -> (match args with
+	    | [a] -> (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
+		| _ -> failwith "isString() needs a single argument provided")
 	  | "Bstringval" -> let rec to_string = function
                           | Value.Int i       -> string_of_int i
                           | Value.String s    -> "\"" ^ Bytes.to_string s ^ "\""
                           | Value.Array a     -> "[" ^ String.concat ", " (List.map to_string (Array.to_list a)) ^ "]"
                           | Value.Sexp (m, a) -> "`" ^ m ^ if List.length a = 0 then "" else " (" ^ String.concat ", " (List.map to_string a) ^ ")"
+						  | _                 -> failwith "A variable couldn't be cast to string."
                         in (st, i, o, (Value.of_string (Bytes.of_string (to_string (List.hd args)))))
-      | _          -> failwith (Printf.sprintf "%s() is not a (built-in) function." name)
+      | _            -> failwith (Printf.sprintf "%s() is not a (built-in) function." name)
   end
 
 (* Simple expressions: syntax and semantics *)
@@ -271,6 +288,9 @@ module Expr =
       lvalue:
         x:IDENT ids:!(acclist) {(x, ids)};
       
+	  lambda:
+	    "{" "lambda" exprlist:!(exprlist) ":" "}";
+	  
       primary:
         n:DECIMAL {Const (Value.Int n)}
       | c:CHAR {Const (Value.Int (Char.code c))}
@@ -351,19 +371,16 @@ module Stmt =
           (match a with
             | Value.String s when tl = [] -> Value.String (Value.update_string s i (Char.chr @@ Value.to_int v))
             | Value.Array a               -> Value.Array (Value.update_array  a i (update a.(i) v tl))
+			| _                           -> failwith "STA operation impossible"
           ) 
       in
       State.update x (match is with | [] -> v | _ -> update (State.eval st x) v is) st
 
     let rec eval env (conf:Expr.config) k (stmt:t) =
-      if (stmt = Skip)
-        then (
-          if (k = Skip)
-            then conf
-            else eval env conf Skip k
-        )
-        else
-        match stmt with
+      if (stmt = Skip) && (k = Skip)
+        then conf
+        else match stmt with
+		  | Skip -> eval env conf Skip k
           | Assign(v, args, x) ->
             let conf, argvals = Expr.evalArgs env conf args in
             let (s, i, o, r) = Expr.eval env conf x in
@@ -402,15 +419,15 @@ module Stmt =
               | Pattern.Wildcard -> Some ([], [])
               | Pattern.Ident v -> Some ([v], [r])
               | Pattern.Sexp(tag_p, subs_p) -> (match r with
-                Value.Sexp(tag_v, subs_v) -> (
+                | Value.Sexp(tag_v, subs_v) -> (
                   (* didn't know ocaml sees "<>" as structural integrity; that ate way too much time*)
-                  if (tag_p <> tag_v) or (List.length subs_p != List.length subs_v) 
+                  if (tag_p <> tag_v) || (List.length subs_p != List.length subs_v) 
                     then None
                     else 
                       let rec inner (subs_p: Pattern.t list) subs_v =
                         match subs_p, subs_v with 
                           | ([], []) -> Some ([], [])
-                          | (p::subs_p, v::subs_v) ->
+                          | (p::subs_p, v::subs_v) -> (
                             let attempt = check p v in
                             match attempt with
                               | None -> None
@@ -418,10 +435,10 @@ module Stmt =
                                 let restattempt = inner subs_p subs_v in
                                 match restattempt with
                                   | None -> None
-                                  | Some (rest_p, rest_v) -> Some(p @ rest_p, v @ rest_v)
-                      in inner subs_p subs_v
-                  ) 
-                )
+                                  | Some (rest_p, rest_v) -> Some(p @ rest_p, v @ rest_v))
+						  | _ -> assert false
+                      in inner subs_p subs_v) 
+				| _ -> failwith "Incorrect pattern - a non-pattern child")
             in let rec switch r cases = match cases with
               | [] -> None
               | (cause, effect)::cases ->
@@ -439,6 +456,7 @@ module Stmt =
                     | ([], []) -> s
                     | ([x], [v]) -> State.update x v s
                     | (x::xs, v::vs) -> massUpdate xs vs (State.update x v s)
+					| _ -> assert false
                 in
                 let s = massUpdate vars vals s in
                 eval env (s, i, o, Value.Void) Skip effect
