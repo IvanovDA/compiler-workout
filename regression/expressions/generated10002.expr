@@ -1,6 +1,6 @@
 
-read (x0);
-read (x1);
-read (x2);
+x0 := read ();
+x1 := read ();
+x2 := read ();
 y := x0 < x1 > x2;
 write (y)

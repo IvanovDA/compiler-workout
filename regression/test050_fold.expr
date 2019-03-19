@@ -1,0 +1,30 @@
+fun reduce(f, init, list) local i, cur {
+  cur := init;
+  for i := 0, i < list.length, i := i + 1 do
+    cur := f(cur, list[i])
+  od;
+  return cur
+}
+
+fun pow(a, b) {
+  if b == 0 then
+    return 1
+  else
+    return a * pow(a, b - 1)
+  fi
+}
+
+fun compose(f, g) {
+  return lambda x: {return f(g(x))}
+}
+
+a := [4, 3, 2, 1];
+
+write(reduce(
+  lambda l, r : { return l + r }
+  , 0, a).string);
+write(reduce(
+  lambda l, r : { return l * r }
+  , 1, a).string);
+write(reduce(pow, 2, a).string)
+  

@@ -111,7 +111,14 @@ module Builtin =
   struct
     let rec eval (st, i, o, _) args name = match name with
       | "read"      -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
-      | "write"     -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
+      | "write"     -> (match List.hd args with
+	    | Value.Int n -> (st, i, o @ [n], Value.Void)
+		| Value.String s ->
+		  Printf.printf "%s\n" (Bytes.to_string s);
+		  (st, i, o, Value.Void)
+		| _ -> failwith "Can't write a non-int, non-string value"
+		)
+	  
       | "elem"      -> (
         match args with
           | [b; j] ->        
@@ -127,8 +134,9 @@ module Builtin =
         | Value.String s -> Bytes.length s
         | Value.Sexp (_, s) -> List.length s
         | _ -> failwith "length() was called for a non-enumerable structure"))
+	  | "arrayOfLen" -> (st, i, o, match args with [n] -> Value.of_array @@ Array.make (Value.to_int n) (Value.Void))
       | "array"     -> (st, i, o, match args with
-        | _::args -> Value.of_array @@ Array.of_list args
+	    | _::args -> Value.of_array @@ Array.of_list args
         | _ -> failwith "array() needs at least one value provided (array length)")
       | "isArray"   -> (match args with
         | [a] -> (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
@@ -250,7 +258,6 @@ module Expr =
         with _ ->
           let (conf, argvals) = evalArgs env conf args in
           env#definition env name (argvals) conf)
-	  (* TODO: er, capture variables *)
       | Lambda(name, captured) ->
 	    let (conf, captvals) = evalArgs env conf (List.map (fun x -> Var x) captured) in
 	    (s, i, o, Value.Closure(name, captvals))
@@ -475,7 +482,7 @@ module Parser =
           [|                
             `Lefta, ["!!"];
             `Lefta, ["&&"];
-            `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+            `Lefta, ["=="; "!="; "<="; "<"; ">="; ">"];
             `Lefta, ["+" ; "-"];
             `Lefta, ["*" ; "/"; "%"];
           |] 
@@ -494,7 +501,7 @@ module Parser =
       | empty {[]};
         
       acclist:
-        "[" id:!(expr_primary) "]" rest:!(acclist) {[id] @ rest}
+        "[" id:!(parse_expr) "]" rest:!(acclist) {[id] @ rest}
       | empty {[]};
         
       lvalue:
