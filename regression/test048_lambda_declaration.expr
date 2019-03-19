@@ -1,0 +1,27 @@
+
+fun g(n) {
+  return n * n
+}
+
+fun h(a) {
+  return a(5)
+}
+
+t := 3;
+fs := [
+  lambda [t] a : {return a * t},
+  lambda b : {return b + 1},
+  lambda c : {return c * 2},
+  lambda d : {return d},
+  lambda [t] e : {
+    t := 1;
+    f := lambda [t] f : {return f * f * t};
+    return f(e) + 2
+  }
+];
+
+write(t);
+for i := 0, i < fs.length, i := i + 1 do
+  write(h(fs[i]))
+od;
+write(t)

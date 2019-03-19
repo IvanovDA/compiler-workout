@@ -26,6 +26,8 @@ let main =
     let infile     = Sys.argv.(if not to_compile then 2 else 1) in
     match parse infile with
     | `Ok prog ->
+	  let (defs, body) = prog in
+	  let prog = (defs @ (Language.LambdaLifter.res ()), body) in
       if to_compile
       then            
         let basename = Filename.chop_suffix infile ".expr" in

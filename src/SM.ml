@@ -10,13 +10,15 @@ open Language
 (* store in an array               *) | STA    of string * int
 (* array name and indices amount   *)
 (* store a string on the stack     *) | STRING of string
+(* store a closure on the stack i guess*) | CLOSURE of string
 (* a label                         *) | LABEL  of string
 (* unconditional jump              *) | JMP    of string                                                                                                                
 (* conditional jump                *) | CJMP   of string * string
 (* begins procedure definition     *) | BEGIN  of string * string list * string list
 (* end procedure definition        *) | END
-(* calls a procedure               *) | CALL   of string * int * bool
-(* name, argc, is a function       *)
+(* calls a procedure               *) | CALL   of int * bool
+(* arity, needing return value     *)
+(* stack: closure, captured, args  *)
 (* returns from a function         *) | RET    of bool
 (* create an s-expression          *) | SEXP   of string * int
 (* tag, length                     *)
@@ -55,12 +57,14 @@ let split n l =
 let rec evalCall env (conf:config) p instr =
   let cst, stack, (s, i, o, r) = conf in
   match instr with
-    | CALL(name, argc, needRetval) -> (
-      if env#is_label name
-        then eval env ((p, s)::cst, stack, (s, i, o, r)) (env#labeled name)
-        else eval env (env#builtin conf name argc needRetval) p
+    | CALL(arity, needRetval) -> (match stack with
+      | Value.Closure(name, captured)::stack ->
+        if env#is_label name
+          then eval env ((p, s)::cst, stack, (s, i, o, r)) (env#labeled name)
+          else eval env (env#builtin (cst, stack, (s, i, o, r)) name arity needRetval) p
+	  | _ -> failwith "Not a function call"
       )
-    | _ -> failwith "Not a function call."
+    | _ -> failwith "Not a function call"
     
 and eval env (conf:config) p =
   let cst, stack, (s, i, o, r) = conf in
@@ -113,7 +117,7 @@ and eval env (conf:config) p =
           | [] -> conf
           | (p, old_scope)::cst -> eval env (cst, stack, (State.leave s old_scope, i, o, r)) p
       )
-      | CALL(_, _, _) -> evalCall env conf p instr
+      | CALL(_, _) -> evalCall env conf p instr
       | SEXP(tag, argc) ->
         let children, stack = split argc stack in
         eval env (cst, Value.Sexp(tag, children)::stack, (s, i, o, r)) p
@@ -142,6 +146,7 @@ and eval env (conf:config) p =
         let s = consumeVals (State.push s State.default vars) vars vals in
         eval env (cst, stack, (s, i, o, r)) p
       | LEAVE -> eval env (cst, stack, (State.drop s, i, o, r)) p
+	  | CLOSURE name -> eval env (cst, Value.Closure(name, [])::stack, (s, i, o, r)) p
       (*| _ -> failwith (Printf.sprintf "[SM] Unsupported instruction: %s" (GT.transform(insn) new @insn[show] () instr))*)
 
 (* Top-level evaluation
@@ -195,10 +200,16 @@ module Labels =
       storage, label_1, label_2
   end
 
-let rec compileCall name argvals ret =
+let rec compileCall closure argvals ret =
   let n = List.length argvals in 
-  compileArgs argvals @ [CALL(name, n, ret)]
-
+  compileArgs argvals @ [CLOSURE closure; CALL(n, ret)]
+(*
+  match closure with
+    | Value.Closure(name, captured) ->
+	  let n = List.length argvals in 
+	  compileArgs argvals @ [CLOSURE name; CALL(n, ret)]
+	| _ -> failwith "no"
+*)
 and compileExpr t = 
   match t with
   | Expr.Const n             -> (
@@ -210,7 +221,7 @@ and compileExpr t =
   )
   | Expr.Var v               -> [LD v]
   | Expr.Binop(op, a, b)     -> compileExpr a @ compileExpr b @ [BINOP op]
-  | Expr.Call(name, args)    -> compileArgs args @ [CALL(name, List.length args, true)]
+  | Expr.Call(closure, args) -> compileCall closure args true
   | Expr.Sexp(tag, children) -> compileArgs children @ [SEXP(tag, List.length children)]
   
 and compileArgs args =
@@ -223,7 +234,7 @@ and compileAccessList ids =
   let rec inner ids = 
     match ids with
      | [] -> []
-     | id::ids -> [CONST id; CALL("BsexpElem", 2, true)] @ (compileAccessList ids)
+     | id::ids -> [CONST id; CLOSURE "BsexpElem"; CALL(2, true)] @ (compileAccessList ids)
   in
   inner (List.rev ids)
   
@@ -320,7 +331,7 @@ and compileImpl (labels:Labels.t) p = match p with
 let rec compileFuns labels funs = match funs with
   | [] -> labels, []
   | f::funs ->
-    let (name, (args, locs, body)) = f in
+    let (name, (captured, args, locs, body)) = f in
     let labels, code = compileImpl labels body in
     let labels, rest = compileFuns labels funs in
     labels, [LABEL name; BEGIN(name, args, locs)] @ code @ [END] @ rest

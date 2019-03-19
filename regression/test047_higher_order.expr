@@ -1,0 +1,15 @@
+
+fun f(n) {
+  return n + 1
+}
+
+fun g(n) {
+  return n * n
+}
+
+fun h(a, b) {
+  return a(3)
+}
+
+write(h(f, 2));
+write(h(g, 2))

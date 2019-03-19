@@ -331,7 +331,7 @@ and compileInstr (env:env) i =
   | RET true  ->
     let retval, prev_env = env#pop in
     prev_env, [Mov (retval, eax); Jmp env#epilogue]
-  | CALL(name, arg_amount, hasRetval) -> compileCall env name arg_amount 0 [] hasRetval
+(*  | CALL(name, arg_amount, hasRetval) -> compileCall env name arg_amount 0 [] hasRetval*)
   | BEGIN(f, args, locs)  ->
     let env = env#enter f args locs in
     env, [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ env#lsize), esp)]

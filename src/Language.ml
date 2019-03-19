@@ -15,17 +15,14 @@ module Value =
       | String of bytes
       | Array of t array
       | Sexp of string * t list
-(*	  | Closure of string * int * t list*)
-(* Function name, arity, captured values *)
-(* Let's assume captured values are in the order they are mentioned in the func, for now *)
+      | Closure of string * t list
+(* Function name, captured values; might be useful to add arity *)
+(* Let's assume captured values are in the order they are mentioned in the func, for now - we need a natural order of some kind *)
       | Void
       
     let to_int = function
       | Int n -> n
-      | String s -> failwith (Printf.sprintf "Wanted an int, got a string: %s" (Bytes.to_string s))
-      | Array a -> failwith (Printf.sprintf "Wanted an int, got an array of length %d" (Array.length a))
-	  | Sexp (tag, _) -> failwith (Printf.sprintf "Wanted an int, got a sexp, tagged %s" tag)
-	  | Void -> failwith "Wanted an int, got a void"
+      | _ -> failwith "Int value expected"
       
     let to_string = function 
       | String s -> Bytes.to_string s 
@@ -42,7 +39,7 @@ module Value =
     let update_string s i x = Bytes.set s i x; s 
     let update_array  a i x = a.(i) <- x; a
   end
-			
+            
 (* States *)
 module State =
   struct
@@ -104,8 +101,8 @@ module State =
 
     (* Drop a local scope *)
     let drop s = match s with
-	  | L (_, _, e) -> e
-	  | _ -> failwith "Can't drop the global scope"
+      | L (_, _, e) -> e
+      | _ -> failwith "Can't drop the global scope"
     
   end
   
@@ -113,38 +110,38 @@ module State =
 module Builtin =
   struct
     let rec eval (st, i, o, _) args name = match name with
-      | "Lread"      -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
-      | "Lwrite"     -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
-      | "Belem"      -> (
-	    match args with
-		  | [b; j] ->        
-			(st, i, o, let i = Value.to_int j in (match b with
-			  | Value.String s -> Value.of_int @@ Char.code (Bytes.get s i)
-			  | Value.Array  a -> a.(i)
-			  | Value.Sexp (_, s) -> List.nth s i
-			  | _ -> failwith "elem() was called for a non-enumerable structure"))
-		  | _ -> failwith "elem() needs two arguments")
-	  | "BsexpElem"  -> eval (st, i, o, Value.Void) (List.rev args) "Belem"
-      | "Blength"    -> (st, i, o, Value.of_int (match List.hd args with
-		| Value.Array a -> Array.length a
-		| Value.String s -> Bytes.length s
-		| Value.Sexp (_, s) -> List.length s
-		| _ -> failwith "length() was called for a non-enumerable structure"))
-      | "Barray"     -> (st, i, o, match args with
-	    | _::args -> Value.of_array @@ Array.of_list args
-		| _ -> failwith "array() needs at least one value provided (array length)")
-      | "LisArray"   -> (match args with
-		| [a] -> (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
-		| _ -> failwith "isArray() needs a single argument provided")
-      | "LisString"  -> (match args with
-	    | [a] -> (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
-		| _ -> failwith "isString() needs a single argument provided")
-	  | "Bstringval" -> let rec to_string = function
+      | "read"      -> (match i with z::i' -> (st, i', o, (Value.Int z)) | _ -> failwith "Unexpected end of input")
+      | "write"     -> (st, i, o @ [Value.to_int @@ List.hd args], Value.Void)
+      | "elem"      -> (
+        match args with
+          | [b; j] ->        
+            (st, i, o, let i = Value.to_int j in (match b with
+              | Value.String s -> Value.of_int @@ Char.code (Bytes.get s i)
+              | Value.Array  a -> a.(i)
+              | Value.Sexp (_, s) -> List.nth s i
+              | _ -> failwith "elem() was called for a non-enumerable structure"))
+          | _ -> failwith "elem() needs two arguments")
+      | "sexpElem"  -> eval (st, i, o, Value.Void) (List.rev args) "elem"
+      | "length"    -> (st, i, o, Value.of_int (match List.hd args with
+        | Value.Array a -> Array.length a
+        | Value.String s -> Bytes.length s
+        | Value.Sexp (_, s) -> List.length s
+        | _ -> failwith "length() was called for a non-enumerable structure"))
+      | "array"     -> (st, i, o, match args with
+        | _::args -> Value.of_array @@ Array.of_list args
+        | _ -> failwith "array() needs at least one value provided (array length)")
+      | "isArray"   -> (match args with
+        | [a] -> (st, i, o, Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0)
+        | _ -> failwith "isArray() needs a single argument provided")
+      | "isString"  -> (match args with
+        | [a] -> (st, i, o, Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0)
+        | _ -> failwith "isString() needs a single argument provided")
+      | "stringval" -> let rec to_string = function
                           | Value.Int i       -> string_of_int i
                           | Value.String s    -> "\"" ^ Bytes.to_string s ^ "\""
                           | Value.Array a     -> "[" ^ String.concat ", " (List.map to_string (Array.to_list a)) ^ "]"
                           | Value.Sexp (m, a) -> "`" ^ m ^ if List.length a = 0 then "" else " (" ^ String.concat ", " (List.map to_string a) ^ ")"
-						  | _                 -> failwith "A variable couldn't be cast to string."
+                          | _                 -> failwith "A variable couldn't be cast to string."
                         in (st, i, o, (Value.of_string (Bytes.of_string (to_string (List.hd args)))))
       | _            -> failwith (Printf.sprintf "%s() is not a (built-in) function." name)
   end
@@ -157,11 +154,15 @@ module Expr =
        notation, it came from GT. 
     *)
     @type t =
-    (* constant         *) | Const  of Value.t
-    (* variable         *) | Var    of string
-    (* binary operator  *) | Binop  of string * t * t 
-    (* S-expressions    *) | Sexp   of string * t list
-    (* function call    *) | Call   of string * t list
+    (* constant         *) | Const       of Value.t
+    (* variable         *) | Var         of string
+    (* binary operator  *) | Binop       of string * t * t 
+    (* S-expressions    *) | Sexp        of string * t list
+    (* function call    *) | Call        of string * t list
+    (* const or var func*)
+    (* create a closure *) | Lambda      of string * string list
+    (* need to define the callsite somehow - can as well be a string identifier for now *)
+    (* probably something more reasonable later *)
     
     (* Available binary operators:
         !!                   --- disjunction
@@ -224,6 +225,7 @@ module Expr =
             let conf, argvals = evalArgs env (s, i, o, r) args in
             conf, r::argvals
           )
+
     and eval env (conf:config) (expr:t) = 
       let (s, i, o, r) = conf in
       match expr with
@@ -236,73 +238,26 @@ module Expr =
       | Sexp(x, args) ->
         let (s, i, o, _), args = evalArgs env conf args in
         (s, i, o, Value.Sexp(x, args))
-      | Call(name, args) ->
-        let (conf, argvals) = evalArgs env conf args in
-        env#definition env name argvals conf
-        
-    (* Expression parser. You can use the following terminals:
-
-         IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
-         DECIMAL --- a decimal constant [0-9]+ as a string
-                                                                                                                  
-    *)
-
-    let lvalueToRvalue (x, ids) =
-      let rec inner x ids = 
-        match ids with
-          | [] -> x
-          | id::ids -> inner (Call("Belem", [x; id])) ids
-      in inner (Var x) ids
+      | Call(name, args) -> (
+        try
+          let closure = State.eval s name in
+          match closure with
+          | Value.Closure(name, captured) ->
+            let (conf, argvals) = evalArgs env conf args in
+            env#definition env name (captured @ argvals) conf
+			(*env#definition env name argvals conf*)
+          | _ -> failwith "Trying to call a non-function"
+        with _ ->
+          let (conf, argvals) = evalArgs env conf args in
+          env#definition env name (argvals) conf)
+	  (* TODO: er, capture variables *)
+      | Lambda(name, captured) ->
+	    let (conf, captvals) = evalArgs env conf (List.map (fun x -> Var x) captured) in
+	    (s, i, o, Value.Closure(name, captvals))
       
-    ostap (                                      
-      parse:
-      !(Ostap.Util.expr 
-        (fun x -> x)
-        (Array.map (
-          fun (a, s) -> a, 
-            List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
-          ) 
-          [|                
-            `Lefta, ["!!"];
-            `Lefta, ["&&"];
-            `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
-            `Lefta, ["+" ; "-"];
-            `Lefta, ["*" ; "/"; "%"];
-          |] 
-        )
-        stringified_if_necessary);
-		
-	  stringified_if_necessary:
-	    v:!(primary) ".string" {Call("Bstringval", [v])}
-	  | v:!(primary) {v};
-
-      exprlist:
-        v:!(parse) "," rest:!(exprlist) {[v] @ rest} 
-      | v:!(parse) {[v]}
-      | empty {[]};
-        
-      acclist:
-        "[" id:!(primary) "]" rest:!(acclist) {[id] @ rest}
-      | empty {[]};
-        
-      lvalue:
-        x:IDENT ids:!(acclist) {(x, ids)};
-      
-	  lambda:
-	    "{" "lambda" exprlist:!(exprlist) ":" "}";
-	  
-      primary:
-        n:DECIMAL {Const (Value.Int n)}
-      | c:CHAR {Const (Value.Int (Char.code c))}
-      | s:STRING {Const (Value.String (Bytes.of_string (String.sub s 1 (String.length s - 2))))}
-      | "[" exprlist:!(exprlist) "]" {Call("Barray", [Const (Value.Int (List.length exprlist))] @ exprlist)}
-      | name:IDENT "(" arglist:!(exprlist) ")" {Call("L" ^ name, arglist)}
-      | "`" tag:IDENT "(" exprlist:!(exprlist) ")" {Sexp(tag, exprlist)}
-      | "`" tag:IDENT {Sexp(tag, [])}
-      | v:!(lvalue) ".length" {Call("Blength", [lvalueToRvalue v])}
-      | x:!(lvalue) {lvalueToRvalue x}
-      | -"(" parse -")"
-    )
+      (* If you :thonk: about it, a normal call is just a closure with no captured variables *)
+      (* Except it isn't, because a closure generally doesn't interact with global variables *)
+      (* Okay; let's say for now that we want to capture variables explicitly when creating a closure then *)
   end
                     
 (* Simple statements: syntax and sematics *)
@@ -317,21 +272,8 @@ module Stmt =
         | Wildcard
         with show
         
-      ostap (
-        identlist:
-            x:!(parse) "," rest:!(identlist) {[x] @ rest}
-          | x:IDENT "," rest:!(identlist) {[Ident x] @ rest}
-          | x:!(parse) {[x]}
-          | x:IDENT {[Ident x]}
-          | empty {[]};
-        
-        parse:
-            "_" {Wildcard}
-          | "`" x:IDENT "(" idents:!(identlist) ")" {Sexp(x, idents)}
-          | "`" x:IDENT {Sexp(x, [])}
-      )
     end
-
+    
     (* The type for statements *)
     @type t =
     (* assignment                       *) | Assign of string * Expr.t list * Expr.t
@@ -371,7 +313,7 @@ module Stmt =
           (match a with
             | Value.String s when tl = [] -> Value.String (Value.update_string s i (Char.chr @@ Value.to_int v))
             | Value.Array a               -> Value.Array (Value.update_array  a i (update a.(i) v tl))
-			| _                           -> failwith "STA operation impossible"
+            | _                           -> failwith "STA operation impossible"
           ) 
       in
       State.update x (match is with | [] -> v | _ -> update (State.eval st x) v is) st
@@ -380,7 +322,7 @@ module Stmt =
       if (stmt = Skip) && (k = Skip)
         then conf
         else match stmt with
-		  | Skip -> eval env conf Skip k
+          | Skip -> eval env conf Skip k
           | Assign(v, args, x) ->
             let conf, argvals = Expr.evalArgs env conf args in
             let (s, i, o, r) = Expr.eval env conf x in
@@ -402,8 +344,8 @@ module Stmt =
             let conf = eval env conf Skip body in
             let conf = Expr.eval env conf cond in
             eval env conf k (if ((retValInt conf) = 0) then Repeat(body, cond) else Skip)
-          | Call(name, args_provided) ->
-            let conf = Expr.eval env conf (Expr.Call(name, args_provided)) in
+          | Call(closure, argvals) ->
+            let conf = Expr.eval env conf (Expr.Call(closure, argvals)) in
             eval env conf Skip k
           | Return(Some t) ->
             let conf = Expr.eval env conf t in conf
@@ -436,9 +378,9 @@ module Stmt =
                                 match restattempt with
                                   | None -> None
                                   | Some (rest_p, rest_v) -> Some(p @ rest_p, v @ rest_v))
-						  | _ -> assert false
+                          | _ -> assert false
                       in inner subs_p subs_v) 
-				| _ -> failwith "Incorrect pattern - a non-pattern child")
+                | _ -> failwith "Incorrect pattern - a non-pattern child")
             in let rec switch r cases = match cases with
               | [] -> None
               | (cause, effect)::cases ->
@@ -456,54 +398,183 @@ module Stmt =
                     | ([], []) -> s
                     | ([x], [v]) -> State.update x v s
                     | (x::xs, v::vs) -> massUpdate xs vs (State.update x v s)
-					| _ -> assert false
+                    | _ -> assert false
                 in
                 let s = massUpdate vars vals s in
                 eval env (s, i, o, Value.Void) Skip effect
           (*| _ -> failwith "[Stmt] Unsupported statement"*)
          
-    (* Statement parser *)
-    ostap (
-      else_branch:
-          "fi" {Skip}
-        | "else" body:!(parse) "fi" {body}
-        | "elif" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)};
-      case_body:
-          cause:!(Pattern.parse) "->" effect:!(parse) "|" rest:!(case_body) {[(cause, Seq(effect, Leave))] @ rest}
-        | cause:!(Pattern.parse) "->" effect:!(parse) {[(cause, Seq(effect, Leave))]};
-      stmt:
-          v:!(Expr.lvalue) ":=" e:!(Expr.parse) {let (x, ids) = v in Assign(x, ids, e)}
-        | name:IDENT "(" arglist:!(Expr.exprlist) ")" {Call("L" ^ name, arglist)}
-        | "if" cond:!(Expr.parse) "then" s1:!(parse) s2:!(else_branch) {If(cond, s1, s2)}
-        | "while" cond:!(Expr.parse) "do" body:!(parse) "od" {While(cond, body)}
-        | "for" init:!(stmt) "," cond:!(Expr.parse) "," step:!(stmt) "do" body:!(parse) "od" {Seq(init, While(cond, Seq(body, step)))}
-        | "repeat" body:!(parse) "until" cond:!(Expr.parse) {Repeat(body, cond)}
-        | "skip" {Skip}
-        | "return" retval:!(Expr.parse) {Return(Some retval)}
-        | "return" {Return(None)}
-        | "case" x:!(Expr.parse) "of" cases:!(case_body) "esac" {Case(x, cases)};
-      parse: s:stmt ";" rest:parse {Seq(s, rest)} | stmt
-    )
   end
 
 (* Function and procedure definitions *)
 module Definition =
   struct
 
-    (* The type for a definition: name, argument list, local variables, body *)
-    type t = string * (string list * string list * Stmt.t)
+    type impl = (string list * string list * string list * Stmt.t)
+  
+    (* The type for a definition: name, captured variables list, argument list, local variables, body *)
+    type t = string * impl
 
-    ostap (             
+    let makeDeclaration (name, (captured, args, locs, body)) =
+      Stmt.Assign(name, [], Expr.Const(Value.Closure(name, [])))
+
+  end
+
+(* Sorry, this is very, very ugly *)
+module LambdaLifter = 
+  struct
+    let storage : (Definition.t list) ref = ref []
+  
+    let counter = ref 0
+    
+    (* "A" because A-nonymous functions and "L" is taken *)
+    let newName () =
+      let id = !counter in
+      counter := !counter + 1;
+      Printf.sprintf "A%d" id
+
+    let add_and_name impl =
+	  let rec findDef impl defs = match defs with
+	    | [] -> None
+		| (name, d_impl)::defs ->
+		  if (d_impl = impl)
+		    then Some name
+		  else
+		    findDef impl defs
+	  in
+	  let name = findDef impl !storage in
+	  match name with
+	    | Some name -> name
+		| None ->
+		  let name = newName () in
+          storage := (name, impl) :: !storage;
+		  name
+	
+    let res () = !storage
+      
+  end
+  
+module Parser =
+  struct
+    let lvalueToRvalue (x, ids) =
+      let rec inner x ids = 
+        match ids with
+          | [] -> x
+          | id::ids -> inner (Expr.Call("elem", [x; id])) ids
+      in inner (Var x) ids
+    
+    ostap (
+      (* Expressions *)
+      parse_expr:
+      !(Ostap.Util.expr 
+        (fun x -> x)
+        (Array.map (
+          fun (a, s) -> a, 
+            List.map  (fun s -> ostap(- $(s)), (fun x y -> Expr.Binop (s, x, y))) s
+          ) 
+          [|                
+            `Lefta, ["!!"];
+            `Lefta, ["&&"];
+            `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+            `Lefta, ["+" ; "-"];
+            `Lefta, ["*" ; "/"; "%"];
+          |] 
+        )
+        stringified_if_necessary);
+        
+      (* TODO: allow postfix chaining *)
+        
+      stringified_if_necessary:
+        v:!(expr_primary) ".string" {Expr.Call("stringval", [v])}
+      | v:!(expr_primary) {v};
+
+      exprlist:
+        v:!(parse_expr) "," rest:!(exprlist) {[v] @ rest} 
+      | v:!(parse_expr) {[v]}
+      | empty {[]};
+        
+      acclist:
+        "[" id:!(expr_primary) "]" rest:!(acclist) {[id] @ rest}
+      | empty {[]};
+        
+      lvalue:
+        x:IDENT ids:!(acclist) {(x, ids)};
+      
+	  (* Here's a problem: what are the non-arg, non-captured vars in body? *)
+	  (* Are they local or global? They sure aren't local to call/definition site scope because that's nonsense *)
+	  (* We have considered everything global by default before; so why not keep at it? *)
+      lambda:
+        "lambda" "[" captured:!(varlist) "]" varlist:!(varlist) ":" "{" body:!(parse_stmt) "}" {
+          let name = LambdaLifter.add_and_name (captured, varlist, [], body) in
+          Expr.Lambda(name, captured)
+        }
+	  | "lambda" varlist:!(varlist) ":" "{" body:!(parse_stmt) "}" {
+          let name = LambdaLifter.add_and_name ([], varlist, [], body) in
+          Expr.Lambda(name, [])
+        };
+      
+      expr_primary:
+        n:DECIMAL {Expr.Const (Value.Int n)}
+      | c:CHAR {Expr.Const (Value.Int (Char.code c))}
+      | s:STRING {Expr.Const (Value.String (Bytes.of_string (String.sub s 1 (String.length s - 2))))}
+      | "[" exprlist:!(exprlist) "]" {Expr.Call("array", [Expr.Const (Value.Int (List.length exprlist))] @ exprlist)}
+      | lambda:!(lambda) {lambda}
+      | name:IDENT "(" arglist:!(exprlist) ")" {Expr.Call(name, arglist)}
+      | "`" tag:IDENT "(" exprlist:!(exprlist) ")" {Expr.Sexp(tag, exprlist)}
+      | "`" tag:IDENT {Expr.Sexp(tag, [])}
+      | v:!(lvalue) ".length" {Expr.Call("length", [lvalueToRvalue v])}
+      | x:!(lvalue) {lvalueToRvalue x}
+      | -"(" parse_expr -")";
+      
+      (* Patterns *)
+      identlist:
+        x:!(parse_pattern) "," rest:!(identlist) {[x] @ rest}
+      | x:IDENT "," rest:!(identlist) {[Stmt.Pattern.Ident x] @ rest}
+      | x:!(parse_pattern) {[x]}
+      | x:IDENT {[Stmt.Pattern.Ident x]}
+      | empty {[]};
+
+      parse_pattern:
+        "_" {Stmt.Pattern.Wildcard}
+      | "`" x:IDENT "(" idents:!(identlist) ")" {Stmt.Pattern.Sexp(x, idents)}
+      | "`" x:IDENT {Stmt.Pattern.Sexp(x, [])};
+      
+      (* Statements *)
+      else_branch:
+        "fi" {Stmt.Skip}
+      | "else" body:!(parse_stmt) "fi" {body}
+      | "elif" cond:!(parse_expr) "then" s1:!(parse_stmt) s2:!(else_branch) {Stmt.If(cond, s1, s2)};
+      
+      case_body:
+        cause:!(parse_pattern) "->" effect:!(parse_stmt) "|" rest:!(case_body) {[(cause, Stmt.Seq(effect, Stmt.Leave))] @ rest}
+      | cause:!(parse_pattern) "->" effect:!(parse_stmt) {[(cause, Stmt.Seq(effect, Stmt.Leave))]};
+      
       varlist:
-          v:IDENT "," rest:!(varlist) {[v] @ rest} 
-        | v:IDENT {[v]}
-        | empty {[]};
+        v:IDENT "," rest:!(varlist) {[v] @ rest} 
+      | v:IDENT {[v]}
+      | empty {[]};
+      
+      stmt:
+        v:!(lvalue) ":=" e:!(parse_expr) {let (x, ids) = v in Stmt.Assign(x, ids, e)}
+      | name:IDENT "(" arglist:!(exprlist) ")" {Stmt.Call(name, arglist)}
+      | "if" cond:!(parse_expr) "then" s1:!(parse_stmt) s2:!(else_branch) {Stmt.If(cond, s1, s2)}
+      | "while" cond:!(parse_expr) "do" body:!(parse_stmt) "od" {Stmt.While(cond, body)}
+      | "for" init:!(parse_stmt) "," cond:!(parse_expr) "," step:!(parse_stmt) "do" body:!(parse_stmt) "od" {Stmt.Seq(init, Stmt.While(cond, Stmt.Seq(body, step)))}
+      | "repeat" body:!(parse_stmt) "until" cond:!(parse_expr) {Stmt.Repeat(body, cond)}
+      | "skip" {Stmt.Skip}
+      | "return" retval:!(parse_expr) {Stmt.Return(Some retval)}
+      | "return" {Stmt.Return(None)}
+      | "case" x:!(parse_expr) "of" cases:!(case_body) "esac" {Stmt.Case(x, cases)};
+      
+      parse_stmt: s:stmt ";" rest:parse_stmt {Stmt.Seq(s, rest)} | stmt;
+      
+      (* Function definitions *)
       locals:
           "local" varlist:!(varlist) {varlist}
         | empty {[]};
-      parse: "fun" name:IDENT "(" args:!(varlist) ")" locs:!(locals) "{" body:!(Stmt.parse) "}"{(("L" ^ name), (args, locs, body))}
+        
+      parse_func: "fun" name:IDENT "(" args:!(varlist) ")" locs:!(locals) "{" body:!(parse_stmt) "}"{((name), ([], args, locs, body))}
     )
-
   end
     
 (* The top-level definitions *)
@@ -519,14 +590,16 @@ type t = Definition.t list * Stmt.t
 *)
 let eval (defs, body) i =
   let module M = Map.Make (String) in
-  let m          = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in  
+  let m        = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in
+  let fundecls = List.map (fun x -> Definition.makeDeclaration x) defs in
+  let body = List.fold_left (fun x y -> Stmt.Seq(y, x)) body fundecls in
   let _, _, o, _ =
     Stmt.eval
       (object
          method definition env f (args:Value.t list) (st, i, o, r) =
            try
-             let xs, locs, s      = snd @@ M.find f m in
-             let st'              = List.fold_left (fun st (x, a) -> State.update x a st) (State.enter st (xs @ locs)) (List.combine xs args) in
+             let cpt, xs, locs, s = snd @@ M.find f m in
+             let st'              = List.fold_left (fun st (x, a) -> State.update x a st) (State.enter st (cpt @ xs @ locs)) (List.combine (cpt @ xs) args) in
              let st'', i', o', r' = Stmt.eval env (st', i, o, r) Stmt.Skip s in
              (State.leave st'' st, i', o', r')
            with Not_found -> Builtin.eval (st, i, o, r) args f
@@ -538,4 +611,4 @@ let eval (defs, body) i =
   o
 
 (* Top-level parser *)
-let parse = ostap (!(Definition.parse)* !(Stmt.parse))
+let parse = ostap (!(Parser.parse_func)* !(Parser.parse_stmt))
